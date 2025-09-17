@@ -34,7 +34,7 @@ def _month_sort_key(name: str) -> int:
         return 99
 
 def _weighted_avg_rate(df: pd.DataFrame) -> float:
-    """Return weighted average of Attendance Rate (0..100) weighted by Current."""
+    """Weighted avg of Attendance Rate (0..100) by Current."""
     if df.empty or "Attendance Rate" not in df.columns:
         return np.nan
     weights = df.get("Current", pd.Series([0]*len(df))).fillna(0).astype(float)
@@ -44,7 +44,7 @@ def _weighted_avg_rate(df: pd.DataFrame) -> float:
         return np.nan
     return float((rates*weights).sum()/total_w)
 
-# ---------- HEADER (smaller logo) ----------
+# ---------- HEADER ----------
 c1, c2, c3 = st.columns([1, 2, 1])
 with c2:
     if logo_path.exists():
@@ -59,7 +59,8 @@ if uploaded is None:
 
 file_bytes = uploaded.read()
 if not file_bytes:
-    st.error("Uploaded file is empty."); st.stop()
+    st.error("Uploaded file is empty.")
+    st.stop()
 
 # Inspect sheets
 try:
@@ -80,7 +81,10 @@ else:
     else:
         use_sheet = st.selectbox("Choose sheet to read", options=sheet_names, index=0)
 
-header_row = st.number_input("Header row (0-indexed). Use 1 if headers are on the 2nd row.", min_value=0, value=1, step=1)
+header_row = st.number_input(
+    "Header row (0-indexed). Use 1 if headers are on the 2nd row.",
+    min_value=0, value=1, step=1
+)
 
 try:
     df = pd.read_excel(BytesIO(file_bytes), sheet_name=use_sheet, header=int(header_row))
@@ -89,7 +93,8 @@ except Exception as e:
     st.stop()
 
 if df.empty:
-    st.error("Selected sheet appears empty."); st.stop()
+    st.error("Selected sheet appears empty.")
+    st.stop()
 
 # ---------- CLEAN ----------
 df.columns = [str(c).strip() for c in df.columns]
@@ -108,7 +113,7 @@ for c in ['Year', 'Month', 'Funded', 'Current', 'Attendance Rate']:
 
 # Remove pre-existing subtotals/totals from source:
 #  - drop rows where Class Name == TOTAL
-#  - drop rows where Class Name is blank/NaN (those green subtotal lines in your screenshot)
+#  - drop rows where Class Name is blank/NaN (those green subtotal lines)
 if 'Class Name' in df.columns:
     mask_total = df['Class Name'].astype(str).str.upper().eq('TOTAL')
     mask_blank = df['Class Name'].astype(str).str.strip().eq('') | df['Class Name'].isna()
@@ -126,7 +131,8 @@ if 'Month' in df.columns:
 class_rows = df[df['Month'].isin(months_present)].copy()
 month_names = sorted({_month_name(m) for m in class_rows['Month'].dropna().unique()}, key=_month_sort_key)
 if not month_names:
-    st.error("No valid Month values found."); st.stop()
+    st.error("No valid Month values found.")
+    st.stop()
 
 sel_month = st.selectbox("Month", options=month_names, index=len(month_names)-1)
 sel_m = list(calendar.month_name).index(sel_month) if sel_month in list(calendar.month_name) else None
@@ -179,16 +185,13 @@ with pd.ExcelWriter(output, engine="xlsxwriter") as writer:
     bold_fmt   = wb.add_format({"bold": True})
     title_fmt  = wb.add_format({"bold": True, "font_size": 16})
     ts_fmt     = wb.add_format({"italic": True, "font_color": "#7F7F7F"})
-    small_head = wb.add_format({"bold": True, "bg_color": GREY_HEADER, "border": 1, "align": "left"})
-    small_cell = wb.add_format({"border": 1})
-    small_pct  = wb.add_format({"border": 1, "num_format": "0.00%"})
 
     header_row = 3
     for c, name in enumerate(ada.columns):
         ws.write(header_row, c, name, header_fmt)
     ws.set_row(header_row, 26)
 
-    # Autosize columns
+    # Autosize
     for i, col in enumerate(ada.columns):
         width = max(12, min(44, int(ada[col].astype(str).map(len).max()) + 2))
         ws.set_column(i, i, width)
@@ -206,21 +209,10 @@ with pd.ExcelWriter(output, engine="xlsxwriter") as writer:
 
     ws.freeze_panes(header_row + 1, 0)
     last_col = len(ada.columns) - 1
-
-    # Title + timestamp
     ws.merge_range(0, 1, 1, last_col, f"Daily Attendance Rate 25-26 — {sel_month}", title_fmt)
     ws.merge_range(2, 1, 2, last_col, f"Exported {now.strftime('%m/%d/%Y %I:%M %p %Z')}", ts_fmt)
     if logo_path.exists():
         ws.insert_image(0, 0, str(logo_path), {"x_scale": 0.45, "y_scale": 0.45, "x_offset": 4, "y_offset": 4})
-
-    # >>> Separate mini table (NOT attached to main table) with Month & Agency Overall
-    # Place it a couple of columns to the right of the ADA table so it won't "attach".
-    info_row = header_row + 1
-    info_col = last_col + 2
-    ws.write(info_row,     info_col,     "Month",             small_head)
-    ws.write(info_row,     info_col + 1, "Agency Overall %",  small_head)
-    ws.write(info_row + 1, info_col,     sel_month,           small_cell)
-    ws.write_number(info_row + 1, info_col + 1, (agency_overall/100.0) if pd.notna(agency_overall) else 0, small_pct)
 
     # Sheet 2: Dashboard
     dash = wb.add_worksheet("Dashboard")
@@ -313,7 +305,15 @@ with pd.ExcelWriter(output, engine="xlsxwriter") as writer:
             "align": {"vertical": "vcenter", "horizontal": "center"},
         })
 
-    # Trend table & chart (no '(dec)')
+    # --- Month/Overall mini table far to the right, separated by blank rows ---
+    info_row = last_tab_row + 4       # 4 blank rows below the left table
+    info_col = 12                     # far to the right (under the KPI area)
+    dash.write(info_row,     info_col,     "Month",            head)
+    dash.write(info_row,     info_col + 1, "Agency Overall %", head)
+    dash.write(info_row + 1, info_col,     sel_month,          cell)
+    dash.write_number(info_row + 1, info_col + 1, (agency_overall/100.0) if pd.notna(agency_overall) else 0, cell_pct)
+
+    # Trend table & chart
     mo = []
     for m in sorted(class_rows['Month'].dropna().unique(), key=lambda x: int(x)):
         mm = int(m)
@@ -354,8 +354,9 @@ with pd.ExcelWriter(output, engine="xlsxwriter") as writer:
 
 # Download
 st.download_button(
-    "⬇️ Download Excel (Dashboard v6)",
+    "⬇️ Download Excel (Dashboard v7)",
     data=output.getvalue(),
-    file_name=f"ADA_Dashboard_v6_{datetime.now(ZoneInfo('America/Chicago')).strftime('%Y%m%d_%H%M')}.xlsx",
+    file_name=f"ADA_Dashboard_v7_{datetime.now(ZoneInfo('America/Chicago')).strftime('%Y%m%d_%H%M')}.xlsx",
     mime="application/vnd.openxmlformats-officedocument.spreadsheetml.sheet"
 )
+
