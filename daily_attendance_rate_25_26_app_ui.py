@@ -1,7 +1,22 @@
+# Write an updated app that mimics the screenshot’s dashboard styling more closely.
+# Key styling:
+# - Big left-aligned "Daily Attendance Dashboard" title in dark blue
+# - Category labels angled (~-45 degrees)
+# - First bar red, others blue
+# - Chart y-axis 86% .. 98% with light grey gridlines
+# - KPI red textbox with white text on top-right
+# - White banner-like textbox for "Attendance Rate - {Month}" above the bar chart
+# - Bottom line chart in red with markers and data labels, same axis style
+# - Left grey table with bold top center and zebra rows
+# - Logos placed similarly (top-left in title block and small over bar chart)
+#
+# No drops anywhere. ADA is class rows + per-campus TOTAL + Agency TOTAL.
+from pathlib import Path
+
+code = r'''
 import streamlit as st
 import pandas as pd
 import numpy as np
-import plotly.express as px
 from datetime import datetime
 from zoneinfo import ZoneInfo
 import calendar
@@ -10,74 +25,49 @@ from io import BytesIO
 
 st.set_page_config(page_title="Daily Attendance Rate 25-26", layout="wide")
 
-# ---- THEME / COLORS ----
-PRIMARY_BLUE = "#2E75B6"
-PRIMARY_RED = "#C00000"
-TEXT_MUTED = "#6B7280"
+# ---- COLORS / FONTS ----
+BLUE = "#2E75B6"
+RED = "#C00000"
+GREY_HEADER = "#E6E6E6"
+LIGHT_GRID = "#D9D9D9"
+DARK_TEXT = "#1F2937"
 
-# CONFIG
 PREFERRED_SHEET = "V12POP_ERSEA_Enrollment"
 logo_path = Path("header_logo.png")
 
-# ---------- HEADER ----------
-with st.container():
-    cols = st.columns([1, 2, 1])
-    with cols[0]:
-        if logo_path.exists():
-            st.image(str(logo_path), use_column_width=True)
-    with cols[1]:
-        st.markdown("<h2 style='text-align:center;margin:6px 0;'>Daily Attendance Rate 25-26</h2>", unsafe_allow_html=True)
-        st.markdown(
-            f"<div style='text-align:center;color:{TEXT_MUTED}'>Export on Sheet 1 (ADA), dashboard on Sheet 2. "
-            "Columns stop at <b>Attendance Rate</b>. Drop trend & drop columns removed.</div>",
-            unsafe_allow_html=True,
-        )
-    with cols[2]:
-        st.write("")
-
-st.divider()
-
-# ---------- SIDEBAR NAV ----------
-st.sidebar.markdown("### Navigation")
-page = st.sidebar.radio("Go to", ["Export", "Dashboard (Preview)"], index=0)
-
-# ---------- HELPERS ----------
 def _month_name(m: int) -> str:
+    import calendar
     try:
         return calendar.month_name[int(m)]
     except Exception:
         return str(m)
 
-def _month_order_key(name: str) -> int:
-    try:
-        m = list(calendar.month_name).index(name)
-    except Exception:
-        return 99
-    order = list(range(8, 13)) + list(range(1, 7))  # Aug..Dec + Jan..Jun
-    return order.index(m) if m in order else 99
-
 def _weighted_avg_rate(df: pd.DataFrame) -> float:
-    """Return weighted average of Attendance Rate (0..100) weighted by Current."""
     if df.empty or "Attendance Rate" not in df.columns:
         return np.nan
-    weights = df.get("Current", pd.Series([0] * len(df))).fillna(0).astype(float)
-    rates = df["Attendance Rate"].fillna(0).astype(float)
+    weights = df.get("Current", pd.Series([0]*len(df))).fillna(0).astype(float)
+    rates   = df["Attendance Rate"].fillna(0).astype(float)  # 0..100
     total_w = float(weights.sum())
     if total_w <= 0:
         return np.nan
-    return float((rates * weights).sum() / total_w)
+    return float((rates*weights).sum()/total_w)
 
-# ---------- UPLOAD ----------
-uploaded_file = st.file_uploader("Upload Enrollment Excel (.xlsx)", type=["xlsx"])
+# ---------- HEADER ----------
+h1, h2, h3 = st.columns([1,2,1])
+with h2:
+    if logo_path.exists():
+        st.image(str(logo_path), use_container_width=True)
+    st.markdown("<h2 style='text-align:center;margin:8px 0;'>Daily Attendance Rate 25-26</h2>", unsafe_allow_html=True)
+st.divider()
 
-if uploaded_file is None:
-    st.info("Upload the Enrollment workbook to enable Export and Dashboard views.")
+uploaded = st.file_uploader("Upload Enrollment Excel (.xlsx)", type=["xlsx"])
+if uploaded is None:
+    st.info("Upload the Enrollment workbook to begin.")
     st.stop()
 
-file_bytes = uploaded_file.read()
+file_bytes = uploaded.read()
 if not file_bytes:
-    st.error("Uploaded file is empty. Please upload a valid .xlsx file.")
-    st.stop()
+    st.error("Uploaded file is empty."); st.stop()
 
 # Inspect sheets
 try:
@@ -87,25 +77,19 @@ except Exception as e:
     st.error(f"Unable to read workbook. Error: {e}")
     st.stop()
 
-# Pick sheet
+# Choose sheet
 if len(sheet_names) == 1:
     use_sheet = sheet_names[0]
-    st.success(f"Only one sheet found. Using sheet: **{use_sheet}**")
+    st.success(f"Using sheet: **{use_sheet}**")
 else:
     if PREFERRED_SHEET in sheet_names:
         use_sheet = PREFERRED_SHEET
         st.success(f"Using preferred sheet: **{use_sheet}**")
     else:
-        st.warning(f"Preferred sheet '{PREFERRED_SHEET}' not found. Please choose a sheet.")
         use_sheet = st.selectbox("Choose sheet to read", options=sheet_names, index=0)
 
-# Header row select
-header_row = st.number_input(
-    "Header row (0-indexed). Use 1 if headers are on the 2nd row.",
-    min_value=0, value=1, step=1
-)
+header_row = st.number_input("Header row (0-indexed). Use 1 if headers are on the 2nd row.", min_value=0, value=1, step=1)
 
-# Read sheet
 try:
     df = pd.read_excel(BytesIO(file_bytes), sheet_name=use_sheet, header=int(header_row))
 except Exception as e:
@@ -113,289 +97,249 @@ except Exception as e:
     st.stop()
 
 if df.empty:
-    st.error(f"The selected sheet ('{use_sheet}') appears empty.")
-    st.stop()
+    st.error("Selected sheet appears empty."); st.stop()
 
-# ---------- CLEAN / NORMALIZE ----------
+# ---------- CLEAN ----------
 df.columns = [str(c).strip() for c in df.columns]
-
-# rename expected Unnamed columns if present
-df = df.rename(columns={
-    "Unnamed: 6": "Funded",
-    "Unnamed: 8": "Current",
-    "Unnamed: 9": "Attendance Rate"
-})
-
-# keep only relevant columns (stop at Attendance Rate)
+df = df.rename(columns={"Unnamed: 6":"Funded", "Unnamed: 8":"Current", "Unnamed: 9":"Attendance Rate"})
 base_cols = ['Year', 'Month', 'Center Name', 'Class Name', 'Funded', 'Current', 'Attendance Rate']
-missing = [c for c in base_cols if c not in df.columns]
-if missing:
-    st.warning(f"Missing expected columns: {', '.join(missing)}")
-
-use_cols = [c for c in base_cols if c in df.columns]
-df = df[use_cols]
-
-# coerce numeric columns
-for c in ['Year', 'Month', 'Funded', 'Current', 'Attendance Rate']:
+df = df[[c for c in base_cols if c in df.columns]]
+for c in ['Year','Month','Funded','Current','Attendance Rate']:
     if c in df.columns:
         df[c] = pd.to_numeric(df[c], errors='coerce')
 
-# month parsing
+# Month select
 months_present = []
 if 'Month' in df.columns:
     parsed = set()
     for m in df['Month'].dropna().unique():
-        try:
-            parsed.add(int(float(m)))
-        except Exception:
-            continue
+        try: parsed.add(int(float(m)))
+        except: pass
     months_present = sorted(parsed)
+class_rows = df[df['Month'].isin(months_present)]
+month_names = sorted({_month_name(m) for m in class_rows['Month'].dropna().unique()}, key=lambda n: (list(range(8,13))+list(range(1,7))).index(list(calendar.month_name).index(n)) if n in list(calendar.month_name) else 99)
+sel_month = st.selectbox("Dashboard month", options=month_names, index=len(month_names)-1 if month_names else 0)
+sel_m = list(calendar.month_name).index(sel_month) if sel_month in list(calendar.month_name) else None
+m_df = class_rows[class_rows['Month']==sel_m].copy()
 
-work = df[df['Month'].isin(months_present)].copy() if months_present else df.copy()
-class_rows = work[work.get('Class Name').notna()].copy()
+# Build ADA with totals
+def _center_block(center_df):
+    body = center_df.sort_values("Class Name").copy()
+    w = _weighted_avg_rate(center_df)
+    return pd.concat([
+        body,
+        pd.DataFrame([{
+            "Year": center_df['Year'].dropna().iloc[0] if center_df['Year'].notna().any() else np.nan,
+            "Month": center_df['Month'].dropna().iloc[0] if center_df['Month'].notna().any() else np.nan,
+            "Center Name": center_df['Center Name'].dropna().iloc[0] if center_df['Center Name'].notna().any() else np.nan,
+            "Class Name": "TOTAL",
+            "Funded": center_df['Funded'].sum(min_count=1),
+            "Current": center_df['Current'].sum(min_count=1),
+            "Attendance Rate": float(w) if pd.notna(w) else np.nan,
+        }])
+    ], ignore_index=True)
 
-# Month choices & selection
-month_choices = sorted({_month_name(m) for m in class_rows['Month'].dropna().unique()}, key=_month_order_key)
-if not month_choices:
-    st.error("No valid Month values found in the data.")
-    st.stop()
+blocks = [ _center_block(g) for _, g in m_df.groupby("Center Name", dropna=False) ]
+ada = pd.concat(blocks, ignore_index=True) if blocks else pd.DataFrame(columns=base_cols)
 
-sel_month_name = st.selectbox("Select month", options=month_choices, index=len(month_choices)-1)
-sel_month_num = list(calendar.month_name).index(sel_month_name) if sel_month_name in list(calendar.month_name) else None
-month_df = class_rows[class_rows['Month'] == sel_month_num] if sel_month_num is not None else class_rows.copy()
+overall = _weighted_avg_rate(m_df)
+ada = pd.concat([ada, pd.DataFrame([{
+    "Year": m_df['Year'].dropna().iloc[0] if m_df['Year'].notna().any() else np.nan,
+    "Month": sel_m,
+    "Center Name": "HCHSP (Overall)",
+    "Class Name": "TOTAL",
+    "Funded": m_df['Funded'].sum(min_count=1),
+    "Current": m_df['Current'].sum(min_count=1),
+    "Attendance Rate": float(overall) if pd.notna(overall) else np.nan,
+}])], ignore_index=True)
 
-# center totals (weighted by 'Current')
-def center_totals(g: pd.DataFrame) -> pd.Series:
-    weights = g.get('Current', pd.Series([0]*len(g))).fillna(0.0).astype(float)
-    rates = g.get('Attendance Rate', pd.Series([np.nan]*len(g))).fillna(0.0).astype(float)
-    w_sum = float(weights.sum())
-    w_avg = (rates * weights).sum() / w_sum if w_sum > 0 else np.nan
-    return pd.Series({
-        'Year': g['Year'].dropna().iloc[0] if 'Year' in g and g['Year'].notna().any() else np.nan,
-        'Month': g['Month'].dropna().iloc[0] if 'Month' in g and g['Month'].notna().any() else np.nan,
-        'Center Name': g['Center Name'].dropna().iloc[0] if 'Center Name' in g and g['Center Name'].notna().any() else np.nan,
-        'Class Name': 'TOTAL',
-        'Funded': g['Funded'].sum(min_count=1) if 'Funded' in g else np.nan,
-        'Current': g['Current'].sum(min_count=1) if 'Current' in g else np.nan,
-        'Attendance Rate': float(w_avg) if pd.notna(w_avg) else np.nan
+# ---------- EXPORT ----------
+from xlsxwriter.utility import xl_rowcol_to_cell
+
+output = BytesIO()
+with pd.ExcelWriter(output, engine="xlsxwriter") as writer:
+    now = datetime.now(ZoneInfo("America/Chicago"))
+    # ADA
+    ada_sheet = "ADA"
+    ada.to_excel(writer, index=False, sheet_name=ada_sheet, startrow=3)
+    wb = writer.book
+    ws = writer.sheets[ada_sheet]
+
+    header_fmt = wb.add_format({"bold": True, "font_color": "white", "bg_color": BLUE, "align":"center","valign":"vcenter"})
+    pct_fmt    = wb.add_format({"num_format":"0.00%"})
+    bold_fmt   = wb.add_format({"bold": True})
+    title_fmt  = wb.add_format({"bold": True, "font_size": 16})
+    ts_fmt     = wb.add_format({"italic": True, "font_color": "#7F7F7F"})
+
+    header_row = 3
+    for c, name in enumerate(ada.columns):
+        ws.write(header_row, c, name, header_fmt)
+    ws.set_row(header_row, 26)
+
+    for i, col in enumerate(ada.columns):
+        width = max(12, min(44, int(ada[col].astype(str).map(len).max()) + 2))
+        ws.set_column(i, i, width)
+
+    # Attendance Rate decimal
+    if 'Attendance Rate' in ada.columns:
+        ci = ada.columns.get_loc('Attendance Rate')
+        ki = ada.columns.get_loc('Class Name')
+        for r in range(len(ada)):
+            excel_r = r+header_row+1
+            v = ada.iloc[r, ci]
+            ws.write_number(excel_r, ci, (float(v)/100.0) if pd.notna(v) else 0, pct_fmt)
+            if str(ada.iloc[r, ki]).upper() == "TOTAL":
+                ws.set_row(excel_r, None, bold_fmt)
+
+    ws.freeze_panes(header_row+1, 0)
+    last_col = len(ada.columns)-1
+    ws.merge_range(0,1,1,last_col, f"Daily Attendance Rate 25-26 — {sel_month}", title_fmt)
+    ws.merge_range(2,1,2,last_col, f"Exported {now.strftime('%m/%d/%Y %I:%M %p %Z')}", ts_fmt)
+    if logo_path.exists():
+        ws.insert_image(0,0,str(logo_path), {"x_scale":0.6,"y_scale":0.6,"x_offset":4,"y_offset":4})
+
+    # DASHBOARD
+    dash = wb.add_worksheet("Dashboard")
+    dash.set_zoom(125)
+
+    # Title block (left aligned)
+    big = wb.add_format({"bold": True, "font_size": 28, "font_color": BLUE})
+    dash.write(0,1,"Daily Attendance Dashboard", big)
+    if logo_path.exists():
+        dash.insert_image(0,0,str(logo_path), {"x_scale":0.5,"y_scale":0.5,"x_offset":4,"y_offset":2})
+    dash.write(2,1, f"Month for bar chart: {sel_month}")
+    dash.write(3,1, f"Exported {now.strftime('%m/%d/%Y %I:%M %p %Z')}")
+
+    # Left table
+    left_r, left_c = 6, 1
+    head = wb.add_format({"bold": True, "bg_color": GREY_HEADER, "border":1, "align":"left"})
+    cell = wb.add_format({"border":1})
+    cell_b = wb.add_format({"border":1,"bold":True})
+    cell_pct = wb.add_format({"border":1,"num_format":"0.00%"})
+    dash.write(left_r, left_c, "Center Name", head); dash.write(left_r, left_c+1, "Attendance %", head)
+
+    centers = m_df.groupby("Center Name", dropna=False).apply(_weighted_avg_rate).reset_index(name="Attendance %").sort_values("Attendance %", ascending=False)
+    for i, row in centers.iterrows():
+        dash.write(left_r+1+i, left_c, row["Center Name"], cell_b if i==0 else cell)
+        dash.write_number(left_r+1+i, left_c+1, (row["Attendance %"]/100.0) if pd.notna(row["Attendance %"]) else 0, cell_pct)
+
+    dash.set_column(left_c, left_c, 30); dash.set_column(left_c+1, left_c+1, 16)
+
+    # Bar chart (right) – mimic styles
+    bar = wb.add_chart({"type":"column"})
+    bar.add_series({
+        "name": f"Attendance Rate - {sel_month}",
+        "categories": ["Dashboard", left_r+1, left_c, left_r+len(centers), left_c],
+        "values":     ["Dashboard", left_r+1, left_c+1, left_r+len(centers), left_c+1],
+        "data_labels": {"value": True, "num_format":"0.00%","font":{"bold":True,"size":9}},
+        "fill":{"color":BLUE},
+        "border":{"color":BLUE},
+        "points":[{"fill":{"color":RED}}] + [{}]*(max(len(centers)-1,0))
+    })
+    # Axes styling
+    bar.set_y_axis({
+        "num_format":"0.00%",
+        "min":0.86, "max":0.98,
+        "major_gridlines":{"visible":True, "line":{"color":LIGHT_GRID}},
+        "minor_gridlines":{"visible":False},
+        "font":{"size":9, "color":DARK_TEXT},
+    })
+    bar.set_x_axis({
+        "label_position":"low",
+        "num_font":{"size":9},
+        "text_axis": True,
+        "minor_tick_mark": "none",
+        "major_tick_mark": "none",
+        "name_font":{"size":10},
+        "num_format": "General",
+        "label_align": 1,  # left
+        "rotation": -45,
+    })
+    bar.set_legend({"none": True})
+    bar.set_title({"name": ""})
+    # Plot area clean
+    bar.set_chartarea({"border":{"none":True}})
+    bar.set_plotarea({"border":{"none":True}})
+
+    # Insert bar
+    dash.insert_chart(5, 5, bar, {"x_scale":1.4,"y_scale":1.25})
+
+    # White banner-like textbox for the chart title (shadow-like via border)
+    dash.insert_textbox(4, 7, f"Attendance Rate - {sel_month}", {
+        "width": 420, "height": 36,
+        "font": {"bold": True, "size": 18, "color": DARK_TEXT},
+        "align": {"vertical":"vcenter","horizontal":"center"},
+        "fill": {"color": "#FFFFFF"},
+        "line": {"color": LIGHT_GRID},
     })
 
-if not month_df.empty:
-    center_total_df = month_df.groupby(['Year', 'Month', 'Center Name'], dropna=False).apply(center_totals).reset_index(drop=True)
-else:
-    center_total_df = pd.DataFrame(columns=base_cols)
+    # Small logo overlay on chart area (optional)
+    if logo_path.exists():
+        dash.insert_image(5, 7, str(logo_path), {"x_scale":0.25,"y_scale":0.25,"x_offset":10,"y_offset":-16})
 
-# combine details + totals per center
-combined_parts = []
-for (yr, mo, center), g in month_df.groupby(['Year','Month','Center Name']):
-    combined_parts.append(g.sort_values(['Class Name']))
-    combined_parts.append(center_total_df[(center_total_df['Year']==yr)&(center_total_df['Month']==mo)&(center_total_df['Center Name']==center)])
-final_df = pd.concat(combined_parts, ignore_index=True) if combined_parts else pd.DataFrame(columns=center_total_df.columns)
-
-# overall weighted avg for selected month
-overall_weighted = _weighted_avg_rate(month_df)
-overall_df = pd.DataFrame([{
-    'Year': month_df['Year'].dropna().iloc[0] if ('Year' in month_df and month_df['Year'].notna().any()) else np.nan,
-    'Month': sel_month_num if sel_month_num is not None else np.nan,
-    'Center Name': 'HCHSP (Overall)',
-    'Class Name': 'TOTAL',
-    'Funded': month_df['Funded'].sum(min_count=1) if 'Funded' in month_df else np.nan,
-    'Current': month_df['Current'].sum(min_count=1) if 'Current' in month_df else np.nan,
-    'Attendance Rate': float(overall_weighted) if pd.notna(overall_weighted) else np.nan
-}])
-
-final_df = pd.concat([final_df, overall_df], ignore_index=True)
-
-# ---------- EXPORT PAGE ----------
-if page == "Export":
-    # Excel export (xlsxwriter)
-    output = BytesIO()
-    with pd.ExcelWriter(output, engine="xlsxwriter") as writer:
-        sheet = "ADA"
-        final_df.to_excel(writer, index=False, sheet_name=sheet, startrow=3)
-        wb = writer.book
-        ws = writer.sheets[sheet]
-
-        # formats
-        header_fmt = wb.add_format({"bold": True, "font_color": "white", "bg_color": PRIMARY_BLUE, "align": "center", "valign": "vcenter", "text_wrap": True})
-        bold_fmt = wb.add_format({"bold": True})
-        bold_pct_fmt = wb.add_format({"bold": True, "num_format": "0.00%"})
-        percent_fmt = wb.add_format({"num_format": "0.00%"})
-        title_fmt = wb.add_format({"bold": True, "align": "left", "valign": "vcenter", "font_size": 16})
-        timestamp_fmt = wb.add_format({"italic": True, "align": "left", "valign": "vcenter", "font_color": "#7F7F7F"})
-
-        # header row
-        header_row = 3
-        for col_num, col_name in enumerate(final_df.columns):
-            ws.write(header_row, col_num, col_name, header_fmt)
-        ws.set_row(header_row, 30)
-
-        # autosize columns
-        for i, col in enumerate(final_df.columns):
-            width = max(12, min(40, int(final_df[col].astype(str).map(len).max()) + 2))
-            ws.set_column(i, i, width)
-
-        # autofilter & freeze
-        last_row_index = len(final_df) + header_row
-        last_col_index = len(final_df.columns) - 1
-        ws.autofilter(header_row, 0, last_row_index, last_col_index)
-        ws.freeze_panes(header_row + 1, 0)
-
-        # percent formatting for Attendance Rate (0..100 -> Excel decimal) and bold TOTAL rows
-        if 'Attendance Rate' in final_df.columns:
-            col_idx = final_df.columns.get_loc('Attendance Rate')
-            cls_idx = final_df.columns.get_loc('Class Name')
-            for r in range(len(final_df)):
-                value_0_to_100 = final_df.iloc[r, col_idx]
-                excel_row = r + header_row + 1
-                if pd.isna(value_0_to_100):
-                    ws.write_blank(excel_row, col_idx, None, percent_fmt)
-                else:
-                    val_decimal = float(value_0_to_100) / 100.0
-                    fmt = bold_pct_fmt if str(final_df.iloc[r].get('Class Name', '')).upper() == 'TOTAL' else percent_fmt
-                    ws.write_number(excel_row, col_idx, val_decimal, fmt)
-                # Bold TOTAL rows
-                if str(final_df.iloc[r, cls_idx]).upper() == 'TOTAL':
-                    ws.set_row(excel_row, None, bold_fmt)
-
-        # title + timestamp
-        ws.merge_range(0, 1, 1, last_col_index, f"Daily Attendance Rate 25-26 — {sel_month_name}", title_fmt)
-        chicago_now = datetime.now(ZoneInfo("America/Chicago"))
-        timestamp_text = f"(Exported {chicago_now.strftime('%m/%d/%Y %I:%M %p %Z')})"
-        ws.merge_range(2, 1, 2, last_col_index, timestamp_text, timestamp_fmt)
-
-        ws.set_row(0, 44)
-        ws.set_row(1, 24)
-        ws.set_row(2, 18)
-
-        # insert logo top-left
-        if logo_path.exists():
-            ws.insert_image(0, 0, str(logo_path), {"x_scale": 0.6, "y_scale": 0.6, "x_offset": 4, "y_offset": 4})
-
-        # ---------------- Sheet 2: Dashboard (bar + line only) ----------------
-        dash = wb.add_worksheet("Dashboard")
-        dash.set_zoom(115)
-
-        # Title & timestamp
-        dash_title_fmt = wb.add_format({"bold": True, "font_size": 18, "font_color": PRIMARY_BLUE})
-        dash.write(0, 1, "Daily Attendance Dashboard", dash_title_fmt)
-        ts_fmt = wb.add_format({"italic": True, "font_color": "#7F7F7F"})
-        dash.write(1, 1, f"Month for bar chart: {sel_month_name}")
-        dash.write(2, 1, f"Exported {chicago_now.strftime('%m/%d/%Y %I:%M %p %Z')}", ts_fmt)
-        # Logo (if exists)
-        if logo_path.exists():
-            dash.insert_image(0, 0, str(logo_path), {"x_scale": 0.6, "y_scale": 0.6, "x_offset": 2, "y_offset": 2})
-
-        # A) Centers bar (selected month)
-        centers_tbl_start = (5, 1)   # row, col
-        bar_df = month_df.groupby("Center Name", dropna=False).apply(_weighted_avg_rate).reset_index(name="Attendance %")
-        bar_df = bar_df.sort_values("Attendance %", ascending=False)
-        dash.write_row(centers_tbl_start[0], centers_tbl_start[1], ["Center Name", "Attendance %"])
-        for i, row in bar_df.iterrows():
-            dash.write(centers_tbl_start[0]+1+i, centers_tbl_start[1],     row["Center Name"])
-            dash.write(centers_tbl_start[0]+1+i, centers_tbl_start[1]+1,   (row["Attendance %"]/100.0) if pd.notna(row["Attendance %"]) else None)
-
-        bar = wb.add_chart({"type":"column"})
-        bar.add_series({
-            "name":       f"Attendance Rate by Centers — {sel_month_name}",
-            "categories": ["Dashboard", centers_tbl_start[0]+1, centers_tbl_start[1], centers_tbl_start[0]+len(bar_df), centers_tbl_start[1]],
-            "values":     ["Dashboard", centers_tbl_start[0]+1, centers_tbl_start[1]+1, centers_tbl_start[0]+len(bar_df), centers_tbl_start[1]+1],
-            "data_labels": {"value": True, "num_format":"0.00%"},
-            "fill": {"color": PRIMARY_BLUE},
-            "border": {"color": PRIMARY_BLUE},
+    # KPI red textbox
+    if not np.isnan(overall):
+        dash.insert_textbox(1, 12, f"Agency Overall\n{overall:.2f}%", {
+            "width": 220, "height": 80,
+            "font": {"bold": True, "color": "white", "size": 20},
+            "align": {"vertical":"vcenter","horizontal":"center"},
+            "fill": {"color": RED},
+            "line": {"color": RED},
         })
-        bar.set_y_axis({"num_format":"0.00%"})
-        bar.set_title({"name": f"Attendance Rate by Centers — {sel_month_name}"})
-        dash.insert_chart(4, 5, bar, {"x_scale":1.1, "y_scale":1.15})
 
-        # B) Agency trend line (Aug–Jun)
-        trend_tbl_start = (5, 9)
-        monthly_overall = []
-        if not class_rows.empty and 'Month' in class_rows:
-            for m in sorted(class_rows['Month'].dropna().unique(), key=lambda x: int(x)):
-                mdf = class_rows[class_rows['Month']==int(m)]
-                monthly_overall.append({
-                    "Month": int(m),
-                    "Month Name": _month_name(m),
-                    "Agency Overall %": _weighted_avg_rate(mdf)
-                })
-        tdf = pd.DataFrame(monthly_overall).sort_values("Month", key=lambda s: s.astype(int)) if monthly_overall else pd.DataFrame(columns=["Month Name","Agency Overall %"])
+    # Bottom trend table + chart
+    mo = []
+    for m in sorted(class_rows['Month'].dropna().unique(), key=lambda x: int(x)):
+        mm = int(m)
+        mdf = class_rows[class_rows['Month']==mm]
+        mo.append({"Month Name": _month_name(mm), "Agency Overall % (dec)": _weighted_avg_rate(mdf)/100.0})
+    mo_df = pd.DataFrame(mo)
+    lr, lc = 30, 1
+    dash.write(lr, lc, "Month", head); dash.write(lr, lc+1, "Agency Overall % (dec)", head)
+    for i, row in mo_df.iterrows():
+        dash.write(lr+1+i, lc, row["Month Name"], cell)
+        dash.write_number(lr+1+i, lc+1, row["Agency Overall % (dec)"], cell_pct)
 
-        dash.write_row(trend_tbl_start[0], trend_tbl_start[1], ["Month", "Agency Overall %"])
-        for i, row in tdf.iterrows():
-            dash.write(trend_tbl_start[0]+1+i, trend_tbl_start[1],   row["Month Name"])
-            dash.write(trend_tbl_start[0]+1+i, trend_tbl_start[1]+1, (row["Agency Overall %"]/100.0) if pd.notna(row["Agency Overall %"]) else None)
+    line = wb.add_chart({"type":"line"})
+    line.add_series({
+        "name":"Agency Overall %",
+        "categories": ["Dashboard", lr+1, lc, lr+len(mo_df), lc],
+        "values": ["Dashboard", lr+1, lc+1, lr+len(mo_df), lc+1],
+        "marker":{"type":"circle","size":6},
+        "line":{"color":RED,"width":2},
+        "data_labels":{"value":True,"num_format":"0.00%","font":{"size":9}},
+    })
+    line.set_y_axis({
+        "num_format":"0.00%",
+        "min":0.86, "max":0.98,
+        "major_gridlines":{"visible":True, "line":{"color":LIGHT_GRID}},
+        "font":{"size":9, "color":DARK_TEXT},
+    })
+    line.set_x_axis({"label_position":"low", "num_font":{"size":9}})
+    line.set_legend({"none": True})
+    line.set_title({"name":"Agency Attendance Trend — 2025"})
+    dash.insert_chart(28, 5, line, {"x_scale":1.4,"y_scale":1.15})
 
-        line = wb.add_chart({"type":"line"})
-        line.add_series({
-            "name": "Agency Overall %",
-            "categories": ["Dashboard", trend_tbl_start[0]+1, trend_tbl_start[1], trend_tbl_start[0]+len(tdf), trend_tbl_start[1]],
-            "values": ["Dashboard", trend_tbl_start[0]+1, trend_tbl_start[1]+1, trend_tbl_start[0]+len(tdf), trend_tbl_start[1]+1],
-            "marker": {"type":"circle", "size":5},
-            "line": {"color": PRIMARY_RED, "width": 2},
-        })
-        line.set_title({"name":"Agency Trend — Aug to Jun"})
-        line.set_y_axis({"num_format":"0.00%"})
-        dash.insert_chart(20, 1, line, {"x_scale":1.1, "y_scale":1.15})
+# Download
+st.download_button(
+    "⬇️ Download Excel (Template-style Dashboard, v2)",
+    data=output.getvalue(),
+    file_name=f"ADA_Dashboard_template_{datetime.now(ZoneInfo('America/Chicago')).strftime('%Y%m%d_%H%M')}.xlsx",
+    mime="application/vnd.openxmlformats-officedocument.spreadsheetml.sheet"
+)
+'''
 
-    st.download_button(
-        label="⬇️ Download Excel (ADA + Dashboard)",
-        data=output.getvalue(),
-        file_name=f"ADA_ByCampus_Classes_{datetime.now(ZoneInfo('America/Chicago')).strftime('%Y%m%d_%H%M')}.xlsx",
-        mime="application/vnd.openxmlformats-officedocument.spreadsheetml.sheet"
-    )
+reqs = """streamlit
+pandas
+numpy
+XlsxWriter
+"""
 
-# ---------- DASHBOARD PREVIEW (Plotly in-app) ----------
-else:
-    # Month selector for preview
-    month_choices = sorted({_month_name(m) for m in class_rows['Month'].dropna().unique()}, key=_month_order_key)
-    sel_month_name = st.selectbox("Preview month", options=month_choices, index=len(month_choices)-1 if month_choices else 0)
-    sel_month_num = list(calendar.month_name).index(sel_month_name) if sel_month_name in list(calendar.month_name) else None
-    month_df = class_rows[class_rows['Month']==sel_month_num] if sel_month_num is not None else class_rows.copy()
+base = Path("/mnt/data")
+(base / "daily_attendance_rate_25_26_app_template_dash_v2.py").write_text(code, encoding="utf-8")
+(base / "requirements.txt").write_text(reqs, encoding="utf-8")
 
-    # KPI tiles
-    k1, k2, k3 = st.columns(3)
-    with k1:
-        st.metric(f"Agency Overall ({sel_month_name})", f"{_weighted_avg_rate(month_df):.2f}%")
-    with k2:
-        tmp = month_df.groupby("Center Name", dropna=False).apply(_weighted_avg_rate).sort_values(ascending=False)
-        st.metric("Top Center (weighted)", tmp.index[0] if len(tmp) else "—", delta=f"{tmp.iloc[0]:.2f}%" if len(tmp) else None)
-    with k3:
-        tmp2 = month_df.groupby("Center Name", dropna=False).apply(_weighted_avg_rate).sort_values(ascending=True)
-        st.metric("Lowest Center (weighted)", tmp2.index[0] if len(tmp2) else "—", delta=f"{tmp2.iloc[0]:.2f}%" if len(tmp2) else None)
+print("Files written:")
+print("- /mnt/data/daily_attendance_rate_25_26_app_template_dash_v2.py")
+print("- /mnt/data/requirements.txt")
 
-    st.markdown("---")
-    tab1, tab2 = st.tabs(["Attendance Rate by Centers (Bar)", "Agency Trend Aug–Jun (Line)"])
-
-    with tab1:
-        if month_df.empty:
-            st.info("No data for the selected month.")
-        else:
-            bar_df = month_df.groupby("Center Name", dropna=False).apply(_weighted_avg_rate).reset_index(name="Attendance %")
-            bar_df = bar_df.sort_values("Attendance %", ascending=False)
-            fig = px.bar(
-                bar_df, x="Center Name", y="Attendance %",
-                text=bar_df["Attendance %"].map(lambda v: f"{v:.2f}%"),
-                color_discrete_sequence=[PRIMARY_BLUE]
-            )
-            fig.update_traces(textposition="outside")
-            fig.update_layout(yaxis_title="Attendance (%)", xaxis_title="", margin=dict(l=20,r=20,t=30,b=60), title=f"Attendance Rate by Centers — {sel_month_name}")
-            st.plotly_chart(fig, use_container_width=True)
-
-    with tab2:
-        monthly_overall = []
-        if not class_rows.empty and 'Month' in class_rows:
-            for m in sorted(class_rows['Month'].dropna().unique(), key=lambda x: int(x)):
-                mdf = class_rows[class_rows['Month']==int(m)]
-                monthly_overall.append({"Month": int(m), "Month Name": _month_name(m), "Agency Overall %": _weighted_avg_rate(mdf)})
-        trend_df = pd.DataFrame(monthly_overall).sort_values("Month", key=lambda s: s.astype(int))
-        if trend_df.empty:
-            st.info("No monthly data available.")
-        else:
-            fig2 = px.line(
-                trend_df, x="Month Name", y="Agency Overall %",
-                markers=True, color_discrete_sequence=[PRIMARY_RED]
-            )
-            fig2.update_traces(text=[f"{v:.2f}%" for v in trend_df["Agency Overall %"]], textposition="top center")
-            fig2.update_layout(yaxis_title="Attendance (%)", xaxis_title="", margin=dict(l=20,r=20,t=30,b=60), title="Agency Trend — Aug to Jun")
-            st.plotly_chart(fig2, use_container_width=True)
