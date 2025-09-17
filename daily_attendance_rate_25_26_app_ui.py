@@ -1,4 +1,3 @@
-
 import streamlit as st
 import pandas as pd
 import numpy as np
@@ -37,11 +36,11 @@ def _weighted_avg_rate(df: pd.DataFrame) -> float:
         return np.nan
     return float((rates*weights).sum()/total_w)
 
-# ---------- HEADER ----------
+# ---------- HEADER (smaller logo) ----------
 h1, h2, h3 = st.columns([1,2,1])
 with h2:
     if logo_path.exists():
-        st.image(str(logo_path), use_container_width=True)
+        st.image(str(logo_path), width=160)  # smaller logo to avoid taking over the UI
     st.markdown("<h2 style='text-align:center;margin:8px 0;'>Daily Attendance Rate 25-26</h2>", unsafe_allow_html=True)
 st.divider()
 
@@ -165,7 +164,7 @@ with pd.ExcelWriter(output, engine="xlsxwriter") as writer:
         width = max(12, min(44, int(ada[col].astype(str).map(len).max()) + 2))
         ws.set_column(i, i, width)
 
-    # Attendance Rate decimal
+    # Attendance Rate decimal + bold TOTAL rows
     if 'Attendance Rate' in ada.columns:
         ci = ada.columns.get_loc('Attendance Rate')
         ki = ada.columns.get_loc('Class Name')
@@ -181,21 +180,21 @@ with pd.ExcelWriter(output, engine="xlsxwriter") as writer:
     ws.merge_range(0,1,1,last_col, f"Daily Attendance Rate 25-26 — {sel_month}", title_fmt)
     ws.merge_range(2,1,2,last_col, f"Exported {now.strftime('%m/%d/%Y %I:%M %p %Z')}", ts_fmt)
     if logo_path.exists():
-        ws.insert_image(0,0,str(logo_path), {"x_scale":0.6,"y_scale":0.6,"x_offset":4,"y_offset":4})
+        ws.insert_image(0,0,str(logo_path), {"x_scale":0.45,"y_scale":0.45,"x_offset":4,"y_offset":4})  # smaller logo on sheet
 
     # DASHBOARD
     dash = wb.add_worksheet("Dashboard")
     dash.set_zoom(125)
 
-    # Title block (left aligned)
+    # Title block
     big = wb.add_format({"bold": True, "font_size": 28, "font_color": BLUE})
     dash.write(0,1,"Daily Attendance Dashboard", big)
     if logo_path.exists():
-        dash.insert_image(0,0,str(logo_path), {"x_scale":0.5,"y_scale":0.5,"x_offset":4,"y_offset":2})
+        dash.insert_image(0,0,str(logo_path), {"x_scale":0.40,"y_scale":0.40,"x_offset":4,"y_offset":2})
     dash.write(2,1, f"Month for bar chart: {sel_month}")
     dash.write(3,1, f"Exported {now.strftime('%m/%d/%Y %I:%M %p %Z')}")
 
-    # Left table
+    # Left table (force strings for Center Name to avoid TypeError)
     left_r, left_c = 6, 1
     head = wb.add_format({"bold": True, "bg_color": GREY_HEADER, "border":1, "align":"left"})
     cell = wb.add_format({"border":1})
@@ -205,12 +204,14 @@ with pd.ExcelWriter(output, engine="xlsxwriter") as writer:
 
     centers = m_df.groupby("Center Name", dropna=False).apply(_weighted_avg_rate).reset_index(name="Attendance %").sort_values("Attendance %", ascending=False)
     for i, row in centers.iterrows():
-        dash.write(left_r+1+i, left_c, row["Center Name"], cell_b if i==0 else cell)
+        name_str = "" if pd.isna(row["Center Name"]) else str(row["Center Name"])
+        # use write_string to prevent XlsxWriter from trying to treat as number
+        dash.write_string(left_r+1+i, left_c, name_str, cell_b if i==0 else cell)
         dash.write_number(left_r+1+i, left_c+1, (row["Attendance %"]/100.0) if pd.notna(row["Attendance %"]) else 0, cell_pct)
 
     dash.set_column(left_c, left_c, 30); dash.set_column(left_c+1, left_c+1, 16)
 
-    # Bar chart (right) – mimic styles
+    # Bar chart
     bar = wb.add_chart({"type":"column"})
     bar.add_series({
         "name": f"Attendance Rate - {sel_month}",
@@ -221,7 +222,6 @@ with pd.ExcelWriter(output, engine="xlsxwriter") as writer:
         "border":{"color":BLUE},
         "points":[{"fill":{"color":RED}}] + [{}]*(max(len(centers)-1,0))
     })
-    # Axes styling
     bar.set_y_axis({
         "num_format":"0.00%",
         "min":0.86, "max":0.98,
@@ -232,24 +232,17 @@ with pd.ExcelWriter(output, engine="xlsxwriter") as writer:
     bar.set_x_axis({
         "label_position":"low",
         "num_font":{"size":9},
-        "text_axis": True,
-        "minor_tick_mark": "none",
-        "major_tick_mark": "none",
-        "name_font":{"size":10},
-        "num_format": "General",
-        "label_align": 1,  # left
         "rotation": -45,
+        "major_tick_mark":"none",
+        "minor_tick_mark":"none",
     })
     bar.set_legend({"none": True})
     bar.set_title({"name": ""})
-    # Plot area clean
     bar.set_chartarea({"border":{"none":True}})
     bar.set_plotarea({"border":{"none":True}})
+    dash.insert_chart(5, 5, bar, {"x_scale":1.35,"y_scale":1.22})
 
-    # Insert bar
-    dash.insert_chart(5, 5, bar, {"x_scale":1.4,"y_scale":1.25})
-
-    # White banner-like textbox for the chart title (shadow-like via border)
+    # Banner title over chart
     dash.insert_textbox(4, 7, f"Attendance Rate - {sel_month}", {
         "width": 420, "height": 36,
         "font": {"bold": True, "size": 18, "color": DARK_TEXT},
@@ -258,11 +251,7 @@ with pd.ExcelWriter(output, engine="xlsxwriter") as writer:
         "line": {"color": LIGHT_GRID},
     })
 
-    # Small logo overlay on chart area (optional)
-    if logo_path.exists():
-        dash.insert_image(5, 7, str(logo_path), {"x_scale":0.25,"y_scale":0.25,"x_offset":10,"y_offset":-16})
-
-    # KPI red textbox
+    # KPI red textbox (top-right)
     if not np.isnan(overall):
         dash.insert_textbox(1, 12, f"Agency Overall\n{overall:.2f}%", {
             "width": 220, "height": 80,
@@ -272,7 +261,7 @@ with pd.ExcelWriter(output, engine="xlsxwriter") as writer:
             "line": {"color": RED},
         })
 
-    # Bottom trend table + chart
+    # Trend table & chart
     mo = []
     for m in sorted(class_rows['Month'].dropna().unique(), key=lambda x: int(x)):
         mm = int(m)
@@ -282,8 +271,8 @@ with pd.ExcelWriter(output, engine="xlsxwriter") as writer:
     lr, lc = 30, 1
     dash.write(lr, lc, "Month", head); dash.write(lr, lc+1, "Agency Overall % (dec)", head)
     for i, row in mo_df.iterrows():
-        dash.write(lr+1+i, lc, row["Month Name"], cell)
-        dash.write_number(lr+1+i, lc+1, row["Agency Overall % (dec)"], cell_pct)
+        dash.write_string(lr+1+i, lc, str(row["Month Name"]), cell)
+        dash.write_number(lr+1+i, lc+1, float(row["Agency Overall % (dec)"]) if pd.notna(row["Agency Overall % (dec)"]) else 0, cell_pct)
 
     line = wb.add_chart({"type":"line"})
     line.add_series({
@@ -303,13 +292,12 @@ with pd.ExcelWriter(output, engine="xlsxwriter") as writer:
     line.set_x_axis({"label_position":"low", "num_font":{"size":9}})
     line.set_legend({"none": True})
     line.set_title({"name":"Agency Attendance Trend — 2025"})
-    dash.insert_chart(28, 5, line, {"x_scale":1.4,"y_scale":1.15})
+    dash.insert_chart(28, 5, line, {"x_scale":1.35,"y_scale":1.12})
 
 # Download
 st.download_button(
-    "⬇️ Download Excel (Template-style Dashboard, v2)",
+    "⬇️ Download Excel (Template-style Dashboard, patched)",
     data=output.getvalue(),
     file_name=f"ADA_Dashboard_template_{datetime.now(ZoneInfo('America/Chicago')).strftime('%Y%m%d_%H%M')}.xlsx",
     mime="application/vnd.openxmlformats-officedocument.spreadsheetml.sheet"
 )
-
