@@ -1,19 +1,4 @@
-# Write an updated app that mimics the screenshot’s dashboard styling more closely.
-# Key styling:
-# - Big left-aligned "Daily Attendance Dashboard" title in dark blue
-# - Category labels angled (~-45 degrees)
-# - First bar red, others blue
-# - Chart y-axis 86% .. 98% with light grey gridlines
-# - KPI red textbox with white text on top-right
-# - White banner-like textbox for "Attendance Rate - {Month}" above the bar chart
-# - Bottom line chart in red with markers and data labels, same axis style
-# - Left grey table with bold top center and zebra rows
-# - Logos placed similarly (top-left in title block and small over bar chart)
-#
-# No drops anywhere. ADA is class rows + per-campus TOTAL + Agency TOTAL.
-from pathlib import Path
 
-code = r'''
 import streamlit as st
 import pandas as pd
 import numpy as np
@@ -327,19 +312,4 @@ st.download_button(
     file_name=f"ADA_Dashboard_template_{datetime.now(ZoneInfo('America/Chicago')).strftime('%Y%m%d_%H%M')}.xlsx",
     mime="application/vnd.openxmlformats-officedocument.spreadsheetml.sheet"
 )
-'''
-
-reqs = """streamlit
-pandas
-numpy
-XlsxWriter
-"""
-
-base = Path("/mnt/data")
-(base / "daily_attendance_rate_25_26_app_template_dash_v2.py").write_text(code, encoding="utf-8")
-(base / "requirements.txt").write_text(reqs, encoding="utf-8")
-
-print("Files written:")
-print("- /mnt/data/daily_attendance_rate_25_26_app_template_dash_v2.py")
-print("- /mnt/data/requirements.txt")
 
