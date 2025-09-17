@@ -26,8 +26,7 @@ def _month_name(m: int) -> str:
         return str(m)
 
 def _month_sort_key(name: str) -> int:
-    # Aug..Dec + Jan..Jun
-    order = list(range(8, 13)) + list(range(1, 7))
+    order = list(range(8, 13)) + list(range(1, 7))  # Aug..Dec + Jan..Jun
     try:
         m = list(calendar.month_name).index(name)
         return order.index(m)
@@ -38,18 +37,18 @@ def _weighted_avg_rate(df: pd.DataFrame) -> float:
     """Return weighted average of Attendance Rate (0..100) weighted by Current."""
     if df.empty or "Attendance Rate" not in df.columns:
         return np.nan
-    weights = df.get("Current", pd.Series([0] * len(df))).fillna(0).astype(float)
-    rates = df["Attendance Rate"].fillna(0).astype(float)
+    weights = df.get("Current", pd.Series([0]*len(df))).fillna(0).astype(float)
+    rates   = df["Attendance Rate"].fillna(0).astype(float)
     total_w = float(weights.sum())
     if total_w <= 0:
         return np.nan
-    return float((rates * weights).sum() / total_w)
+    return float((rates*weights).sum()/total_w)
 
 # ---------- HEADER (smaller logo) ----------
 c1, c2, c3 = st.columns([1, 2, 1])
 with c2:
     if logo_path.exists():
-        st.image(str(logo_path), width=160)  # smaller so it doesn't dominate the UI
+        st.image(str(logo_path), width=160)
     st.markdown("<h2 style='text-align:center;margin:8px 0;'>Daily Attendance Rate 25-26</h2>", unsafe_allow_html=True)
 st.divider()
 
@@ -60,8 +59,7 @@ if uploaded is None:
 
 file_bytes = uploaded.read()
 if not file_bytes:
-    st.error("Uploaded file is empty.")
-    st.stop()
+    st.error("Uploaded file is empty."); st.stop()
 
 # Inspect sheets
 try:
@@ -82,10 +80,7 @@ else:
     else:
         use_sheet = st.selectbox("Choose sheet to read", options=sheet_names, index=0)
 
-header_row = st.number_input(
-    "Header row (0-indexed). Use 1 if headers are on the 2nd row.",
-    min_value=0, value=1, step=1
-)
+header_row = st.number_input("Header row (0-indexed). Use 1 if headers are on the 2nd row.", min_value=0, value=1, step=1)
 
 try:
     df = pd.read_excel(BytesIO(file_bytes), sheet_name=use_sheet, header=int(header_row))
@@ -94,8 +89,7 @@ except Exception as e:
     st.stop()
 
 if df.empty:
-    st.error("Selected sheet appears empty.")
-    st.stop()
+    st.error("Selected sheet appears empty."); st.stop()
 
 # ---------- CLEAN ----------
 df.columns = [str(c).strip() for c in df.columns]
@@ -106,36 +100,39 @@ df = df.rename(columns={
 })
 base_cols = ['Year', 'Month', 'Center Name', 'Class Name', 'Funded', 'Current', 'Attendance Rate']
 df = df[[c for c in base_cols if c in df.columns]]
+
+# numeric coercions
 for c in ['Year', 'Month', 'Funded', 'Current', 'Attendance Rate']:
     if c in df.columns:
         df[c] = pd.to_numeric(df[c], errors='coerce')
 
-# Remove any TOTAL rows in the source (prevents duplicates later)
+# Remove pre-existing subtotals/totals from source:
+#  - drop rows where Class Name == TOTAL
+#  - drop rows where Class Name is blank/NaN (those green subtotal lines in your screenshot)
 if 'Class Name' in df.columns:
-    df = df[~df['Class Name'].astype(str).str.upper().eq('TOTAL')].copy()
+    mask_total = df['Class Name'].astype(str).str.upper().eq('TOTAL')
+    mask_blank = df['Class Name'].astype(str).str.strip().eq('') | df['Class Name'].isna()
+    df = df[~(mask_total | mask_blank)].copy()
 
-# Month select
+# Month selection
 months_present = []
 if 'Month' in df.columns:
     parsed = set()
     for m in df['Month'].dropna().unique():
-        try:
-            parsed.add(int(float(m)))
-        except Exception:
-            pass
+        try: parsed.add(int(float(m)))
+        except: pass
     months_present = sorted(parsed)
 
 class_rows = df[df['Month'].isin(months_present)].copy()
 month_names = sorted({_month_name(m) for m in class_rows['Month'].dropna().unique()}, key=_month_sort_key)
 if not month_names:
-    st.error("No valid month values found.")
-    st.stop()
+    st.error("No valid Month values found."); st.stop()
 
-sel_month = st.selectbox("Month", options=month_names, index=len(month_names) - 1)
+sel_month = st.selectbox("Month", options=month_names, index=len(month_names)-1)
 sel_m = list(calendar.month_name).index(sel_month) if sel_month in list(calendar.month_name) else None
 m_df = class_rows[class_rows['Month'] == sel_m].copy()
 
-# --- Build ADA (class rows + one TOTAL per center + agency overall) ---
+# --- Build ADA: class rows + ONE TOTAL per center + agency overall ---
 def _center_block(center_df: pd.DataFrame) -> pd.DataFrame:
     body = center_df.sort_values("Class Name").copy()
     w = _weighted_avg_rate(center_df)
@@ -155,7 +152,7 @@ def _center_block(center_df: pd.DataFrame) -> pd.DataFrame:
 blocks = [_center_block(g) for _, g in m_df.groupby("Center Name", dropna=False)]
 ada = pd.concat(blocks, ignore_index=True) if blocks else pd.DataFrame(columns=base_cols)
 
-overall = _weighted_avg_rate(m_df)
+agency_overall = _weighted_avg_rate(m_df)
 ada = pd.concat([ada, pd.DataFrame([{
     "Year": m_df['Year'].dropna().iloc[0] if m_df['Year'].notna().any() else np.nan,
     "Month": sel_m,
@@ -163,7 +160,7 @@ ada = pd.concat([ada, pd.DataFrame([{
     "Class Name": "TOTAL",
     "Funded": m_df['Funded'].sum(min_count=1),
     "Current": m_df['Current'].sum(min_count=1),
-    "Attendance Rate": float(overall) if pd.notna(overall) else np.nan,
+    "Attendance Rate": float(agency_overall) if pd.notna(agency_overall) else np.nan,
 }])], ignore_index=True)
 
 # ---------- EXPORT (Excel with Dashboard) ----------
@@ -182,13 +179,16 @@ with pd.ExcelWriter(output, engine="xlsxwriter") as writer:
     bold_fmt   = wb.add_format({"bold": True})
     title_fmt  = wb.add_format({"bold": True, "font_size": 16})
     ts_fmt     = wb.add_format({"italic": True, "font_color": "#7F7F7F"})
+    small_head = wb.add_format({"bold": True, "bg_color": GREY_HEADER, "border": 1, "align": "left"})
+    small_cell = wb.add_format({"border": 1})
+    small_pct  = wb.add_format({"border": 1, "num_format": "0.00%"})
 
     header_row = 3
     for c, name in enumerate(ada.columns):
         ws.write(header_row, c, name, header_fmt)
     ws.set_row(header_row, 26)
 
-    # Autosize cols
+    # Autosize columns
     for i, col in enumerate(ada.columns):
         width = max(12, min(44, int(ada[col].astype(str).map(len).max()) + 2))
         ws.set_column(i, i, width)
@@ -200,16 +200,27 @@ with pd.ExcelWriter(output, engine="xlsxwriter") as writer:
         for r in range(len(ada)):
             excel_r = r + header_row + 1
             v = ada.iloc[r, ci]
-            ws.write_number(excel_r, ci, (float(v) / 100.0) if pd.notna(v) else 0, pct_fmt)
+            ws.write_number(excel_r, ci, (float(v)/100.0) if pd.notna(v) else 0, pct_fmt)
             if str(ada.iloc[r, ki]).upper() == "TOTAL":
                 ws.set_row(excel_r, None, bold_fmt)
 
     ws.freeze_panes(header_row + 1, 0)
     last_col = len(ada.columns) - 1
+
+    # Title + timestamp
     ws.merge_range(0, 1, 1, last_col, f"Daily Attendance Rate 25-26 — {sel_month}", title_fmt)
     ws.merge_range(2, 1, 2, last_col, f"Exported {now.strftime('%m/%d/%Y %I:%M %p %Z')}", ts_fmt)
     if logo_path.exists():
         ws.insert_image(0, 0, str(logo_path), {"x_scale": 0.45, "y_scale": 0.45, "x_offset": 4, "y_offset": 4})
+
+    # >>> Separate mini table (NOT attached to main table) with Month & Agency Overall
+    # Place it a couple of columns to the right of the ADA table so it won't "attach".
+    info_row = header_row + 1
+    info_col = last_col + 2
+    ws.write(info_row,     info_col,     "Month",             small_head)
+    ws.write(info_row,     info_col + 1, "Agency Overall %",  small_head)
+    ws.write(info_row + 1, info_col,     sel_month,           small_cell)
+    ws.write_number(info_row + 1, info_col + 1, (agency_overall/100.0) if pd.notna(agency_overall) else 0, small_pct)
 
     # Sheet 2: Dashboard
     dash = wb.add_worksheet("Dashboard")
@@ -220,7 +231,7 @@ with pd.ExcelWriter(output, engine="xlsxwriter") as writer:
     dash.write(0, 1, "Daily Attendance Dashboard", big)
     if logo_path.exists():
         dash.insert_image(0, 0, str(logo_path), {"x_scale": 0.40, "y_scale": 0.40, "x_offset": 4, "y_offset": 2})
-    dash.write(2, 1, f"Month for bar chart: {sel_month}")
+    dash.write(2, 1, f"Month: {sel_month}")
     dash.write(3, 1, f"Exported {now.strftime('%m/%d/%Y %I:%M %p %Z')}")
 
     # Left table (sorted high->low) with AutoFilter
@@ -245,17 +256,17 @@ with pd.ExcelWriter(output, engine="xlsxwriter") as writer:
         dash.write_number(left_r + 1 + i, left_c + 1, (row["Attendance %"] / 100.0) if pd.notna(row["Attendance %"]) else 0, cell_pct)
 
     last_tab_row = left_r + len(centers)
-    dash.autofilter(left_r, left_c, last_tab_row, left_c + 1)  # filter option in Excel
+    dash.autofilter(left_r, left_c, last_tab_row, left_c + 1)
     dash.set_column(left_c, left_c, 30)
     dash.set_column(left_c + 1, left_c + 1, 16)
 
-    # Bar chart with threshold coloring (>=95% red)
+    # Bar chart (>=95% red). Title WITHOUT "Centers"
     vals = [(float(v) / 100.0 if pd.notna(v) else 0.0) for v in centers["Attendance %"].tolist()]
     points = [{"fill": {"color": (RED if v >= 0.95 else BLUE)}} for v in vals]
 
     bar = wb.add_chart({"type": "column"})
     bar.add_series({
-        "name": f"Attendance Rate by Centers — {sel_month}",
+        "name": f"Attendance Rate — {sel_month}",
         "categories": ["Dashboard", left_r + 1, left_c, last_tab_row, left_c],
         "values":     ["Dashboard", left_r + 1, left_c + 1, last_tab_row, left_c + 1],
         "data_labels": {"value": True, "num_format": "0.00%", "font": {"bold": True, "size": 9}},
@@ -275,33 +286,34 @@ with pd.ExcelWriter(output, engine="xlsxwriter") as writer:
         "minor_tick_mark": "none",
     })
     bar.set_legend({"none": True})
-    bar.set_title({"name": f"Attendance Rate by Centers — {sel_month}"})
+    bar.set_title({"name": f"Attendance Rate — {sel_month}"})
     bar.set_chartarea({"border": {"none": True}})
     bar.set_plotarea({"border": {"none": True}})
     dash.insert_chart(5, 5, bar, {"x_scale": 1.35, "y_scale": 1.22})
 
-    # KPI rounded rectangle (rounded if insert_shape supported; else textbox)
-    kpi_text = f"Agency Overall\n{overall:.2f}%"
+    # Agency Overall KPI — rounded rectangle with centered text
+    kpi_text = f"{agency_overall:.2f}%"
     try:
         dash.insert_shape(1, 12, {
             "type": "rounded_rectangle",
-            "width": 230, "height": 90,
+            "width": 220, "height": 80,
             "text": kpi_text,
             "fill": {"color": RED},
             "line": {"color": RED},
-            "font": {"bold": True, "color": "white", "size": 20},
+            "font": {"bold": True, "color": "white", "size": 22},
             "align": {"vertical": "vcenter", "horizontal": "center"},
         })
+        dash.write(1, 12, "")  # no stray text
     except Exception:
         dash.insert_textbox(1, 12, kpi_text, {
-            "width": 230, "height": 90,
+            "width": 220, "height": 80,
             "fill": {"color": RED},
             "line": {"color": RED},
-            "font": {"bold": True, "color": "white", "size": 20},
+            "font": {"bold": True, "color": "white", "size": 22},
             "align": {"vertical": "vcenter", "horizontal": "center"},
         })
 
-    # Trend table & chart (no '(dec)' anywhere)
+    # Trend table & chart (no '(dec)')
     mo = []
     for m in sorted(class_rows['Month'].dropna().unique(), key=lambda x: int(x)):
         mm = int(m)
@@ -323,8 +335,11 @@ with pd.ExcelWriter(output, engine="xlsxwriter") as writer:
         "values":     ["Dashboard", lr + 1, lc + 1, lr + len(mo_df), lc + 1],
         "marker": {"type": "circle", "size": 6},
         "line": {"color": RED, "width": 2},
-        # Simulated "callout" style via label fill + border:
-        "data_labels": {"value": True, "num_format": "0.00%", "fill": {"color": "#FFFFFF"}, "border": {"color": LIGHT_GRID}, "font": {"size": 9}},
+        # callout-like labels (white fill + light border)
+        "data_labels": {"value": True, "num_format": "0.00%",
+                        "fill": {"color": "#FFFFFF"},
+                        "border": {"color": LIGHT_GRID},
+                        "font": {"size": 9}},
     })
     line.set_y_axis({
         "num_format": "0.00%",
@@ -339,8 +354,8 @@ with pd.ExcelWriter(output, engine="xlsxwriter") as writer:
 
 # Download
 st.download_button(
-    "⬇️ Download Excel (Dashboard v5)",
+    "⬇️ Download Excel (Dashboard v6)",
     data=output.getvalue(),
-    file_name=f"ADA_Dashboard_v5_{datetime.now(ZoneInfo('America/Chicago')).strftime('%Y%m%d_%H%M')}.xlsx",
+    file_name=f"ADA_Dashboard_v6_{datetime.now(ZoneInfo('America/Chicago')).strftime('%Y%m%d_%H%M')}.xlsx",
     mime="application/vnd.openxmlformats-officedocument.spreadsheetml.sheet"
 )
