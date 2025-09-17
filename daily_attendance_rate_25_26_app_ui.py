@@ -45,7 +45,7 @@ def _weighted_avg_rate(df: pd.DataFrame) -> float:
     return float((rates*weights).sum()/total_w)
 
 # ---------- HEADER ----------
-c1, c2, c3 = st.columns([1, 2, 1])
+c1, c2, _ = st.columns([1, 2, 1])
 with c2:
     if logo_path.exists():
         st.image(str(logo_path), width=160)
@@ -113,7 +113,7 @@ for c in ['Year', 'Month', 'Funded', 'Current', 'Attendance Rate']:
 
 # Remove pre-existing subtotals/totals from source:
 #  - drop rows where Class Name == TOTAL
-#  - drop rows where Class Name is blank/NaN (those green subtotal lines)
+#  - drop rows where Class Name is blank/NaN (green subtotal lines)
 if 'Class Name' in df.columns:
     mask_total = df['Class Name'].astype(str).str.upper().eq('TOTAL')
     mask_blank = df['Class Name'].astype(str).str.strip().eq('') | df['Class Name'].isna()
@@ -169,7 +169,7 @@ ada = pd.concat([ada, pd.DataFrame([{
     "Attendance Rate": float(agency_overall) if pd.notna(agency_overall) else np.nan,
 }])], ignore_index=True)
 
-# ---------- EXPORT (Excel with Dashboard) ----------
+# ---------- EXPORT (Excel with Dashboard + Summary) ----------
 output = BytesIO()
 with pd.ExcelWriter(output, engine="xlsxwriter") as writer:
     now = datetime.now(ZoneInfo("America/Chicago"))
@@ -207,8 +207,13 @@ with pd.ExcelWriter(output, engine="xlsxwriter") as writer:
             if str(ada.iloc[r, ki]).upper() == "TOTAL":
                 ws.set_row(excel_r, None, bold_fmt)
 
+    # Freeze and **AutoFilter over the full table**
     ws.freeze_panes(header_row + 1, 0)
     last_col = len(ada.columns) - 1
+    last_row = header_row + len(ada)
+    ws.autofilter(header_row, 0, last_row, last_col)
+
+    # Title + timestamp
     ws.merge_range(0, 1, 1, last_col, f"Daily Attendance Rate 25-26 — {sel_month}", title_fmt)
     ws.merge_range(2, 1, 2, last_col, f"Exported {now.strftime('%m/%d/%Y %I:%M %p %Z')}", ts_fmt)
     if logo_path.exists():
@@ -252,7 +257,7 @@ with pd.ExcelWriter(output, engine="xlsxwriter") as writer:
     dash.set_column(left_c, left_c, 30)
     dash.set_column(left_c + 1, left_c + 1, 16)
 
-    # Bar chart (>=95% red). Title WITHOUT "Centers"
+    # Bar chart (>=95% red)
     vals = [(float(v) / 100.0 if pd.notna(v) else 0.0) for v in centers["Attendance %"].tolist()]
     points = [{"fill": {"color": (RED if v >= 0.95 else BLUE)}} for v in vals]
 
@@ -283,7 +288,7 @@ with pd.ExcelWriter(output, engine="xlsxwriter") as writer:
     bar.set_plotarea({"border": {"none": True}})
     dash.insert_chart(5, 5, bar, {"x_scale": 1.35, "y_scale": 1.22})
 
-    # Agency Overall KPI — rounded rectangle with centered text
+    # KPI rounded rectangle (centered)
     kpi_text = f"{agency_overall:.2f}%"
     try:
         dash.insert_shape(1, 12, {
@@ -295,7 +300,6 @@ with pd.ExcelWriter(output, engine="xlsxwriter") as writer:
             "font": {"bold": True, "color": "white", "size": 22},
             "align": {"vertical": "vcenter", "horizontal": "center"},
         })
-        dash.write(1, 12, "")  # no stray text
     except Exception:
         dash.insert_textbox(1, 12, kpi_text, {
             "width": 220, "height": 80,
@@ -305,58 +309,24 @@ with pd.ExcelWriter(output, engine="xlsxwriter") as writer:
             "align": {"vertical": "vcenter", "horizontal": "center"},
         })
 
-    # --- Month/Overall mini table far to the right, separated by blank rows ---
-    info_row = last_tab_row + 4       # 4 blank rows below the left table
-    info_col = 12                     # far to the right (under the KPI area)
-    dash.write(info_row,     info_col,     "Month",            head)
-    dash.write(info_row,     info_col + 1, "Agency Overall %", head)
-    dash.write(info_row + 1, info_col,     sel_month,          cell)
-    dash.write_number(info_row + 1, info_col + 1, (agency_overall/100.0) if pd.notna(agency_overall) else 0, cell_pct)
+    # Sheet 3: Summary (detached Month / Agency Overall % table)
+    summary = wb.add_worksheet("Summary")
+    s_head = wb.add_format({"bold": True, "bg_color": GREY_HEADER, "border": 1})
+    s_cell = wb.add_format({"border": 1})
+    s_pct  = wb.add_format({"border": 1, "num_format": "0.00%"})
+    summary.set_zoom(130)
 
-    # Trend table & chart
-    mo = []
-    for m in sorted(class_rows['Month'].dropna().unique(), key=lambda x: int(x)):
-        mm = int(m)
-        mdf = class_rows[class_rows['Month'] == mm]
-        mo.append({"Month Name": _month_name(mm), "Agency Overall %": _weighted_avg_rate(mdf) / 100.0})
-    mo_df = pd.DataFrame(mo)
-
-    lr, lc = 30, 1
-    dash.write(lr, lc,   "Month",            head)
-    dash.write(lr, lc+1, "Agency Overall %", head)
-    for i, row in mo_df.iterrows():
-        dash.write_string(lr + 1 + i, lc, str(row["Month Name"]), cell)
-        dash.write_number(lr + 1 + i, lc + 1, float(row["Agency Overall %"]) if pd.notna(row["Agency Overall %"]) else 0, cell_pct)
-
-    line = wb.add_chart({"type": "line"})
-    line.add_series({
-        "name": "Agency Overall %",
-        "categories": ["Dashboard", lr + 1, lc, lr + len(mo_df), lc],
-        "values":     ["Dashboard", lr + 1, lc + 1, lr + len(mo_df), lc + 1],
-        "marker": {"type": "circle", "size": 6},
-        "line": {"color": RED, "width": 2},
-        # callout-like labels (white fill + light border)
-        "data_labels": {"value": True, "num_format": "0.00%",
-                        "fill": {"color": "#FFFFFF"},
-                        "border": {"color": LIGHT_GRID},
-                        "font": {"size": 9}},
-    })
-    line.set_y_axis({
-        "num_format": "0.00%",
-        "min": 0.86, "max": 0.98,
-        "major_gridlines": {"visible": True, "line": {"color": LIGHT_GRID}},
-        "font": {"size": 9, "color": DARK_TEXT},
-    })
-    line.set_x_axis({"label_position": "low", "num_font": {"size": 9}})
-    line.set_legend({"none": True})
-    line.set_title({"name": "Agency Attendance Trend — 2025–2026"})
-    dash.insert_chart(28, 5, line, {"x_scale": 1.35, "y_scale": 1.12})
+    summary.write(0, 0, "Month", s_head)
+    summary.write(0, 1, "Agency Overall %", s_head)
+    summary.write(1, 0, sel_month, s_cell)
+    summary.write_number(1, 1, (agency_overall/100.0) if pd.notna(agency_overall) else 0, s_pct)
+    summary.set_column(0, 0, 18)
+    summary.set_column(1, 1, 20)
 
 # Download
 st.download_button(
-    "⬇️ Download Excel (Dashboard v7)",
+    "⬇️ Download Excel (Dashboard v8)",
     data=output.getvalue(),
-    file_name=f"ADA_Dashboard_v7_{datetime.now(ZoneInfo('America/Chicago')).strftime('%Y%m%d_%H%M')}.xlsx",
+    file_name=f"ADA_Dashboard_v8_{datetime.now(ZoneInfo('America/Chicago')).strftime('%Y%m%d_%H%M')}.xlsx",
     mime="application/vnd.openxmlformats-officedocument.spreadsheetml.sheet"
 )
-
