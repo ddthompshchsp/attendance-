@@ -2,9 +2,9 @@
 import re
 import calendar
 from io import BytesIO
-from pathlib import Path 
 from datetime import datetime
 from zoneinfo import ZoneInfo
+from pathlib import Path
 
 import numpy as np
 import pandas as pd
@@ -16,10 +16,11 @@ st.set_page_config(page_title="Daily Attendance Rate 25–26", layout="wide")
 PRIMARY_BLUE = "#2E75B6"
 PRIMARY_RED  = "#C00000"
 TEXT_MUTED   = "#6B7280"
+GREY_HEADER  = "#F2F2F2"
 
 logo_path = Path("header_logo.png")  # your blue/red County logo
 
-# ---------- Hero Header (like your screenshot) ----------
+# ---------- Hero Header ----------
 st.markdown("<div style='height:14px'></div>", unsafe_allow_html=True)
 c1, c2, c3 = st.columns([1, 2, 1])
 with c2:
@@ -30,8 +31,8 @@ with c2:
         <div style="text-align:center; margin-top:8px;">
             <div style="font-weight:800; font-size:34px; line-height:1.15;">HCHSP Daily Attendance (2025–2026)</div>
             <div style="color:{TEXT_MUTED}; font-size:16px; margin-top:6px;">
-                Upload your <b>Enrollment.xlsx</b> file to generate a formatted report.<br/>
-                Optionally include a Dashboard sheet and Drops analysis.
+                Upload <b>Enrollment.xlsx</b>. Pick a month. Get a clean ADA sheet and a Dashboard sheet with tables.<br/>
+                Optional: include Drops (Current & Cumulative).
             </div>
         </div>
         """,
@@ -45,10 +46,10 @@ st.divider()
 left, right = st.columns([1, 1])
 with left:
     include_dashboard = st.toggle("➕ Add Dashboard sheet", value=True,
-                                  help="Adds a second sheet with KPI and charts in HCHSP colors.")
+                                  help="Adds a second sheet with KPI and tables in HCHSP colors.")
 with right:
     include_drops = st.toggle("📉 Include Drops", value=True,
-                              help="Maps 'Drops' columns (M & N or duplicate 'Drops' headers) and adds a Drops chart when Dashboard is enabled.")
+                              help="Maps two 'Drops' columns (M & N or duplicate 'Drops' headers) and adds them after Attendance Rate.")
 
 # ---------- Upload ----------
 uploaded = st.file_uploader("Upload Enrollment.xlsx", type=["xlsx"])
@@ -145,219 +146,186 @@ if uploaded:
     work = df[df['Month'].isin(months_present)].copy() if months_present else df.copy()
     class_rows = work[work.get('Class Name').notna()].copy()
 
-    # Drops mapping (only if requested)
+    # Month picker
+    month_choices = sorted({_month_name(m) for m in class_rows['Month'].dropna().unique()}, key=_month_order_key)
+    sel_month_name = st.selectbox("Select month", options=month_choices, index=len(month_choices)-1 if month_choices else 0)
+    sel_month_num = list(calendar.month_name).index(sel_month_name) if sel_month_name in list(calendar.month_name) else None
+    month_df = class_rows[class_rows['Month']==sel_month_num] if sel_month_num is not None else class_rows.iloc[0:0]
+
+    # Drops mapping (optional)
     cur_drop_col = cum_drop_col = None; drop_note = ""
     if include_drops:
         cur_drop_col, cum_drop_col, drop_note = _detect_drops(class_rows)
-        st.caption(f"Drops mapping: {drop_note}")
-        # Manual override
-        all_cols = list(class_rows.columns)
-        col1, col2 = st.columns(2)
-        with col1:
-            cur_drop_col = st.selectbox("Current Drops column", options=[None]+all_cols,
-                                        index=(all_cols.index(cur_drop_col)+1 if cur_drop_col in all_cols else 0))
-        with col2:
-            cum_drop_col = st.selectbox("Cumulative Drops column", options=[None]+all_cols,
-                                        index=(all_cols.index(cum_drop_col)+1 if cum_drop_col in all_cols else 0))
+        with st.expander("Drops mapping", expanded=False):
+            st.caption(drop_note)
+            all_cols = list(class_rows.columns)
+            col1, col2 = st.columns(2)
+            with col1:
+                cur_drop_col = st.selectbox("Current Drops column", options=[None]+all_cols,
+                                            index=(all_cols.index(cur_drop_col)+1 if cur_drop_col in all_cols else 0))
+            with col2:
+                cum_drop_col = st.selectbox("Cumulative Drops column", options=[None]+all_cols,
+                                            index=(all_cols.index(cum_drop_col)+1 if cum_drop_col in all_cols else 0))
 
-    # Build center totals and final export table (ADA)
-    def center_totals(g):
+    # ADA table
+    ada_cols = ['Year','Month','Center Name','Class Name','Funded','Current','Attendance Rate']
+    ada_df = month_df[ada_cols].copy() if not month_df.empty else pd.DataFrame(columns=ada_cols)
+    if include_drops:
+        if cur_drop_col and cur_drop_col in month_df.columns:
+            ada_df['Current Drops'] = pd.to_numeric(month_df[cur_drop_col], errors="coerce")
+        else:
+            ada_df['Current Drops'] = np.nan
+        if cum_drop_col and cum_drop_col in month_df.columns:
+            ada_df['Cumulative Drops'] = pd.to_numeric(month_df[cum_drop_col], errors="coerce")
+        else:
+            ada_df['Cumulative Drops'] = np.nan
+
+    # Weighted center table
+    def _weighted_center(g):
         weights = g.get('Current', pd.Series([0]*len(g))).fillna(0.0).astype(float)
-        rates   = g.get('Attendance Rate', pd.Series([np.nan]*len(g))).fillna(0.0).astype(float)
-        w_avg   = (rates*weights).sum()/weights.sum() if weights.sum() > 0 else np.nan
-        return pd.Series({
-            'Year': g['Year'].dropna().iloc[0] if 'Year' in g and g['Year'].notna().any() else np.nan,
-            'Month': g['Month'].dropna().iloc[0] if 'Month' in g and g['Month'].notna().any() else np.nan,
-            'Center Name': g['Center Name'].dropna().iloc[0] if 'Center Name' in g and g['Center Name'].notna().any() else np.nan,
-            'Class Name': 'TOTAL',
-            'Funded': g['Funded'].sum(min_count=1) if 'Funded' in g else np.nan,
-            'Current': g['Current'].sum(min_count=1) if 'Current' in g else np.nan,
-            'Attendance Rate': float(w_avg) if pd.notna(w_avg) else np.nan
-        })
+        rates   = g.get('Attendance Rate', pd.Series([0]*len(g))).fillna(0.0).astype(float)
+        w = weights.sum()
+        return float((rates*weights).sum()/w) if w>0 else np.nan
 
-    if not class_rows.empty:
-        center_total_df = class_rows.groupby(['Year','Month','Center Name'], dropna=False).apply(center_totals).reset_index(drop=True)
-    else:
-        center_total_df = pd.DataFrame(columns=['Year','Month','Center Name','Class Name','Funded','Current','Attendance Rate'])
+    centers_tbl = pd.DataFrame(columns=["Center Name","Attendance %"])
+    if not month_df.empty:
+        centers_tbl = month_df.groupby("Center Name", dropna=False).apply(_weighted_center).reset_index(name="Attendance %")
+        centers_tbl["Attendance %"] = centers_tbl["Attendance %"]
+        centers_tbl = centers_tbl.sort_values("Attendance %", ascending=False)
 
-    combined_parts = []
-    for (yr, mo, center), g in class_rows.groupby(['Year','Month','Center Name']):
-        combined_parts.append(g.sort_values(['Class Name']))
-        combined_parts.append(center_total_df[(center_total_df['Year']==yr)&(center_total_df['Month']==mo)&(center_total_df['Center Name']==center)])
-    combined = pd.concat(combined_parts, ignore_index=True) if combined_parts else pd.DataFrame(columns=center_total_df.columns)
-
-    # Agency monthly trend
-    monthly_overall = []
-    if not class_rows.empty and 'Month' in class_rows:
+    # Agency trend table
+    trend_tbl = []
+    if not class_rows.empty and 'Month' in class_rows.columns:
         for m in sorted(class_rows['Month'].dropna().unique(), key=lambda x: int(x)):
-            mdf = class_rows[class_rows['Month']==m]
-            monthly_overall.append({"Month": int(m), "Month Name": _month_name(m), "Agency Overall %": _weighted_avg_rate(mdf)})
-    monthly_overall = pd.DataFrame(monthly_overall)
+            m_int = int(m)
+            mdf = class_rows[class_rows['Month']==m_int]
+            trend_tbl.append({"Month Name": _month_name(m_int), "Agency Overall %": _weighted_avg_rate(mdf)})
+    trend_tbl = pd.DataFrame(trend_tbl)
 
-    latest_m = int(class_rows['Month'].dropna().max()) if not class_rows.empty else None
-    latest_df = class_rows[class_rows['Month']==latest_m] if latest_m is not None else class_rows.iloc[0:0]
-    latest_overall = _weighted_avg_rate(latest_df)
+    # Drops table
+    drops_tbl = pd.DataFrame(columns=["Center Name","Current Drops","Cumulative Drops"])
+    if include_drops and not month_df.empty:
+        tmp = month_df.copy()
+        if cur_drop_col and cur_drop_col in tmp.columns:
+            tmp['__cur__'] = pd.to_numeric(tmp[cur_drop_col], errors="coerce")
+        else:
+            tmp['__cur__'] = np.nan
+        if cum_drop_col and cum_drop_col in tmp.columns:
+            tmp['__cum__'] = pd.to_numeric(tmp[cum_drop_col], errors="coerce")
+        else:
+            tmp['__cum__'] = np.nan
+        drops_tbl = tmp.groupby("Center Name", dropna=False)[['__cur__','__cum__']].sum(min_count=1).reset_index()
+        drops_tbl = drops_tbl.rename(columns={'__cur__':'Current Drops','__cum__':'Cumulative Drops'})
+        drops_tbl = drops_tbl.sort_values('Current Drops', ascending=False, na_position='last')
 
-    overall_df = pd.DataFrame([{
-        'Year': class_rows['Year'].dropna().iloc[0] if ('Year' in class_rows and class_rows['Year'].notna().any()) else np.nan,
-        'Month': latest_m if latest_m is not None else np.nan,
-        'Center Name': 'HCHSP (Overall)',
-        'Class Name': 'TOTAL',
-        'Funded': class_rows['Funded'].sum(min_count=1) if 'Funded' in class_rows else np.nan,
-        'Current': class_rows['Current'].sum(min_count=1) if 'Current' in class_rows else np.nan,
-        'Attendance Rate': float(latest_overall) if pd.notna(latest_overall) else np.nan
-    }])
+    # ---------- Preview tables ----------
+    st.markdown(f"### Attendance Rate by Centers — {sel_month_name}")
+    st.dataframe(
+        centers_tbl.style.format({"Attendance %": "{:.2f}%"}).set_properties(subset=["Center Name"], **{"font-weight":"bold"}),
+        use_container_width=True
+    )
 
-    final_df = pd.concat([combined, overall_df], ignore_index=True)
+    c1, c2 = st.columns([2,1])
+    with c1:
+        st.markdown("#### Agency Trend (Aug–Jun)")
+        st.dataframe(trend_tbl.style.format({"Agency Overall %": "{:.2f}%"}), use_container_width=True, height=280)
+    with c2:
+        if include_drops:
+            st.markdown(f"#### Drops by Center — {sel_month_name}")
+            st.dataframe(drops_tbl, use_container_width=True, height=280)
 
-    # Month selector for Dashboard bars
-    month_choices = sorted({_month_name(m) for m in class_rows['Month'].dropna().unique()}, key=_month_order_key)
-    sel_month_name = st.selectbox("Choose month for Dashboard charts (in Excel)", options=month_choices, index=len(month_choices)-1 if month_choices else 0)
-    sel_month_num = list(calendar.month_name).index(sel_month_name) if sel_month_name in list(calendar.month_name) else None
-    month_df = class_rows[class_rows['Month']==sel_month_num] if sel_month_num is not None else class_rows.copy()
-
-    # ---------- Build Excel (single workbook, conditional sheets) ----------
+    # ---------- Excel Export (ADA + Dashboard Tables) ----------
     output = BytesIO()
     with pd.ExcelWriter(output, engine="xlsxwriter") as writer:
+        chicago_now = datetime.now(ZoneInfo("America/Chicago"))
         # Sheet 1: ADA
-        sheet = "ADA"
-        final_df.to_excel(writer, index=False, sheet_name=sheet, startrow=3)
+        ada_sheet = "ADA"
+        ada_df.to_excel(writer, index=False, sheet_name=ada_sheet, startrow=3)
         wb = writer.book
-        ws = writer.sheets[sheet]
+        ws = writer.sheets[ada_sheet]
 
         header_fmt   = wb.add_format({"bold": True, "font_color": "white", "bg_color": PRIMARY_BLUE, "align": "center", "valign": "vcenter", "text_wrap": True})
-        bold_fmt     = wb.add_format({"bold": True})
-        bold_pct_fmt = wb.add_format({"bold": True, "num_format": "0.00%"})
         percent_fmt  = wb.add_format({"num_format": "0.00%"})
         title_fmt    = wb.add_format({"bold": True, "align": "left", "valign": "vcenter", "font_size": 16})
         timestamp_fmt= wb.add_format({"italic": True, "align": "left", "valign": "vcenter", "font_color": "#7F7F7F"})
 
         header_row = 3
-        for col_num, col_name in enumerate(final_df.columns):
+        for col_num, col_name in enumerate(ada_df.columns):
             ws.write(header_row, col_num, col_name, header_fmt)
-        ws.set_row(header_row, 30)
+        ws.set_row(header_row, 26)
 
-        for i, col in enumerate(final_df.columns):
-            width = max(12, min(40, int(final_df[col].astype(str).map(len).max()) + 2))
+        # Autosize
+        for i, col in enumerate(ada_df.columns):
+            width = max(12, min(42, int(ada_df[col].astype(str).map(len).max()) + 2))
             ws.set_column(i, i, width)
 
-        last_row_index = len(final_df) + header_row
-        last_col_index = len(final_df.columns) - 1
+        last_row_index = len(ada_df) + header_row
+        last_col_index = len(ada_df.columns) - 1
         ws.autofilter(header_row, 0, last_row_index, last_col_index)
         ws.freeze_panes(header_row + 1, 0)
 
-        if 'Attendance Rate' in final_df.columns:
-            col_idx = final_df.columns.get_loc('Attendance Rate')
-            for r in range(len(final_df)):
-                val_0_100 = final_df.iloc[r, col_idx]
+        # Attendance Rate to percent
+        if 'Attendance Rate' in ada_df.columns:
+            col_idx = ada_df.columns.get_loc('Attendance Rate')
+            for r in range(len(ada_df)):
+                val_0_100 = ada_df.iloc[r, col_idx]
                 excel_row = r + header_row + 1
                 if pd.isna(val_0_100):
                     ws.write_blank(excel_row, col_idx, None, percent_fmt)
                 else:
-                    ws.write_number(excel_row, col_idx, float(val_0_100)/100.0,
-                                    bold_pct_fmt if str(final_df.iloc[r].get('Class Name','')).upper()=='TOTAL' else percent_fmt)
+                    ws.write_number(excel_row, col_idx, float(val_0_100)/100.0, percent_fmt)
 
-        month_labels = sorted({_month_name(m) for m in work['Month'].dropna().unique()}, key=_month_order_key)
-        month_label_text = ", ".join([m for m in month_labels if m])
-
-        chicago_now = datetime.now(ZoneInfo("America/Chicago"))
-        ws.merge_range(0, 1, 1, last_col_index, f"Daily Attendance Rate 25–26 ({month_label_text})", title_fmt)
+        # Header/title with selected month only
+        ws.merge_range(0, 1, 1, last_col_index, f"Daily Attendance Rate 25–26 — {sel_month_name}", title_fmt)
         ws.merge_range(2, 1, 2, last_col_index, f"(Exported {chicago_now.strftime('%m/%d/%Y %I:%M %p %Z')})", timestamp_fmt)
         ws.set_row(0, 44); ws.set_row(1, 24); ws.set_row(2, 18)
         if logo_path.exists():
             ws.insert_image(0, 0, str(logo_path), {"x_scale":0.6, "y_scale":0.6, "x_offset":4, "y_offset":4})
 
-        # Sheet 2: Dashboard (only if requested)
+        # Sheet 2: Dashboard (tables only)
         if include_dashboard:
             dash = wb.add_worksheet("Dashboard")
             dash.set_zoom(115)
-
-            # Title & timestamp
             dash_title_fmt = wb.add_format({"bold": True, "font_size": 18, "font_color": PRIMARY_BLUE})
-            dash.write(0, 1, "Daily Attendance Dashboard", dash_title_fmt)
             ts_fmt = wb.add_format({"italic": True, "font_color": TEXT_MUTED})
-            dash.write(1, 1, f"Month for bar charts: {sel_month_name}")
-            dash.write(2, 1, f"Exported {chicago_now.strftime('%m/%d/%Y %I:%M %p %Z')}", ts_fmt)
+            dash.write(0, 1, f"Attendance Rate by Centers — {sel_month_name}", dash_title_fmt)
+            dash.write(1, 1, f"Exported {chicago_now.strftime('%m/%d/%Y %I:%M %p %Z')}", ts_fmt)
             if logo_path.exists():
                 dash.insert_image(0, 0, str(logo_path), {"x_scale":0.6, "y_scale":0.6, "x_offset":2, "y_offset":2})
 
-            # KPI
-            kpi_fmt_label = wb.add_format({"bold": True, "align":"center", "valign":"vcenter", "bg_color":"#EEF3FA", "border":1})
-            kpi_fmt_val   = wb.add_format({"bold": True, "align":"center", "valign":"vcenter", "font_size":16, "font_color":PRIMARY_BLUE, "border":1})
-            dash.merge_range(4, 1, 5, 3, f"Agency Overall ({sel_month_name})", kpi_fmt_label)
-            kpi_val = _weighted_avg_rate(month_df)
-            if pd.isna(kpi_val):
-                dash.merge_range(6, 1, 7, 3, "—", kpi_fmt_val)
-            else:
-                pct_fmt = wb.add_format({"bold": True, "align":"center", "valign":"vcenter", "font_size":16, "font_color":PRIMARY_BLUE, "num_format":"0.00%", "border":1})
-                dash.merge_range(6, 1, 7, 3, kpi_val/100.0, pct_fmt)
+            # Helper formats
+            tbl_header = wb.add_format({"bold": True, "bg_color": GREY_HEADER, "border":1, "align":"center"})
+            cell_left  = wb.add_format({"border":1})
+            cell_bold  = wb.add_format({"border":1, "bold":True})
+            cell_pct   = wb.add_format({"border":1, "num_format":"0.00%"})
+            cell_int   = wb.add_format({"border":1, "num_format":"0"})
 
-            # Data tables for charts
-            centers_tbl_start = (10, 1)
-            cmdf = month_df.groupby("Center Name", dropna=False).apply(_weighted_avg_rate).reset_index(name="Attendance %")
-            cmdf = cmdf.sort_values("Attendance %", ascending=False)
-            dash.write_row(centers_tbl_start[0], centers_tbl_start[1], ["Center Name","Attendance %"])
-            for i,row in cmdf.iterrows():
-                dash.write(centers_tbl_start[0]+1+i, centers_tbl_start[1],   row["Center Name"])
-                dash.write(centers_tbl_start[0]+1+i, centers_tbl_start[1]+1, row["Attendance %"]/100.0)
+            # Table A: Centers by Attendance
+            start_r, start_c = 4, 1
+            dash.write(start_r, start_c+0, "Center Name", tbl_header)
+            dash.write(start_r, start_c+1, "Attendance %", tbl_header)
+            for i, row in centers_tbl.iterrows():
+                dash.write(start_r+1+i, start_c+0, row["Center Name"], cell_bold)  # bold center names
+                dash.write_number(start_r+1+i, start_c+1, (row["Attendance %"]/100.0) if pd.notna(row["Attendance %"]) else 0, cell_pct)
 
-            trend_tbl_start = (10, 6)
-            tdf = monthly_overall.sort_values("Month", key=lambda s: s.astype(int)) if not monthly_overall.empty else monthly_overall
-            dash.write_row(trend_tbl_start[0], trend_tbl_start[1], ["Month","Agency Overall %"])
-            for i,row in tdf.iterrows():
-                dash.write(trend_tbl_start[0]+1+i, trend_tbl_start[1],   row["Month Name"])
-                dash.write(trend_tbl_start[0]+1+i, trend_tbl_start[1]+1, row["Agency Overall %"]/100.0)
+            # Table B: Agency Trend (Aug–Jun)
+            tr_r, tr_c = start_r, start_c+4
+            dash.write(tr_r, tr_c+0, "Month", tbl_header)
+            dash.write(tr_r, tr_c+1, "Agency Overall %", tbl_header)
+            for i, row in trend_tbl.iterrows():
+                dash.write(tr_r+1+i, tr_c+0, row["Month Name"], cell_left)
+                dash.write_number(tr_r+1+i, tr_c+1, (row["Agency Overall %"]/100.0) if pd.notna(row["Agency Overall %"]) else 0, cell_pct)
 
-            drops_tbl_start = (10, 11)
-            ddf = pd.DataFrame(columns=["Center Name","Drops"])
+            # Table C: Drops (Current & Cumulative)
             if include_drops:
-                drop_col = cur_drop_col or cum_drop_col
-                if drop_col and drop_col in month_df.columns:
-                    tmp = month_df.copy()
-                    tmp[drop_col] = pd.to_numeric(tmp[drop_col], errors="coerce")
-                    ddf = tmp.groupby("Center Name", dropna=False)[drop_col].sum(min_count=1).reset_index()
-                    ddf = ddf.sort_values(drop_col, ascending=False).rename(columns={drop_col:"Drops"})
-            dash.write_row(drops_tbl_start[0], drops_tbl_start[1], ["Center Name","Drops"])
-            for i,row in ddf.iterrows():
-                dash.write(drops_tbl_start[0]+1+i, drops_tbl_start[1],   row["Center Name"])
-                dash.write(drops_tbl_start[0]+1+i, drops_tbl_start[1]+1, row["Drops"])
-
-            # Charts
-            bar = wb.add_chart({"type":"column"})
-            bar.add_series({
-                "name":"Attendance %",
-                "categories":["Dashboard", centers_tbl_start[0]+1, centers_tbl_start[1], centers_tbl_start[0]+len(cmdf), centers_tbl_start[1]],
-                "values":["Dashboard", centers_tbl_start[0]+1, centers_tbl_start[1]+1, centers_tbl_start[0]+len(cmdf), centers_tbl_start[1]+1],
-                "data_labels":{"value":True, "num_format":"0.00%"},
-                "fill":{"color":PRIMARY_BLUE}, "border":{"color":PRIMARY_BLUE},
-            })
-            bar.set_title({"name": f"Centers by Attendance — {sel_month_name}"})
-            bar.set_y_axis({"num_format":"0.00%"})
-            dash.insert_chart(4, 5, bar, {"x_scale":1.1, "y_scale":1.1})
-
-            line = wb.add_chart({"type":"line"})
-            line.add_series({
-                "name":"Agency Overall %",
-                "categories":["Dashboard", trend_tbl_start[0]+1, trend_tbl_start[1], trend_tbl_start[0]+len(tdf), trend_tbl_start[1]],
-                "values":["Dashboard", trend_tbl_start[0]+1, trend_tbl_start[1]+1, trend_tbl_start[0]+len(tdf), trend_tbl_start[1]+1],
-                "marker":{"type":"circle","size":5},
-                "line":{"color":PRIMARY_RED,"width":2},
-            })
-            line.set_title({"name":"Agency Trend — Aug to Jun"})
-            line.set_y_axis({"num_format":"0.00%"})
-            dash.insert_chart(20, 1, line, {"x_scale":1.1, "y_scale":1.1})
-
-            if include_drops:
-                drop_chart = wb.add_chart({"type":"column"})
-                drop_chart.add_series({
-                    "name":"Drops",
-                    "categories":["Dashboard", drops_tbl_start[0]+1, drops_tbl_start[1], drops_tbl_start[0]+len(ddf), drops_tbl_start[1]],
-                    "values":["Dashboard", drops_tbl_start[0]+1, drops_tbl_start[1]+1, drops_tbl_start[0]+len(ddf), drops_tbl_start[1]+1],
-                    "data_labels":{"value":True},
-                    "fill":{"color":PRIMARY_RED}, "border":{"color":PRIMARY_RED},
-                })
-                drop_chart.set_title({"name": f"Drop Trends — {sel_month_name}"})
-                dash.insert_chart(20, 5, drop_chart, {"x_scale":1.1, "y_scale":1.1})
+                dr_r, dr_c = start_r+len(centers_tbl)+4, start_c
+                dash.write(dr_r, dr_c+0, "Center Name", tbl_header)
+                dash.write(dr_r, dr_c+1, "Current Drops", tbl_header)
+                dash.write(dr_r, dr_c+2, "Cumulative Drops", tbl_header)
+                for i, row in drops_tbl.iterrows():
+                    dash.write(dr_r+1+i, dr_c+0, row["Center Name"], cell_bold)
+                    dash.write_number(dr_r+1+i, dr_c+1, row["Current Drops"] if pd.notna(row["Current Drops"]) else 0, cell_int)
+                    dash.write_number(dr_r+1+i, dr_c+2, row["Cumulative Drops"] if pd.notna(row["Cumulative Drops"]) else 0, cell_int)
 
     st.download_button(
         "⬇️ Download Excel (ADA{}{})".format(
@@ -369,4 +337,6 @@ if uploaded:
         mime="application/vnd.openxmlformats-officedocument.spreadsheetml.sheet"
     )
 else:
+    st.info("Upload the Enrollment workbook to generate your report.")
+
     st.info("Upload the Enrollment workbook to generate your report.")
