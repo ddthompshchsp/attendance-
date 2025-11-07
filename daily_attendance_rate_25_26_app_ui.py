@@ -47,26 +47,31 @@ def _center_block(center_df: pd.DataFrame) -> pd.DataFrame:
 def _canon(x: str) -> str:
     return re.sub(r'[^a-z0-9]+', '', str(x).lower())
 
-# User simple names for grouping (we'll match by token containment, preserving full names in output)
-SIMPLE_ALIASES = {"fairs":"farias","sequin":"seguin","chaps":"chapa"}
+# User's simple campus names, with typo aliases normalized
+SIMPLE_ALIASES = {
+    "fairs": "farias",
+    "sequin": "seguin",
+    "chaps": "chapa",
+}
 def _norm_simple(s: str) -> str:
     k = _canon(s)
     return SIMPLE_ALIASES.get(k, k)
 
 CENTER_GROUPS_SIMPLE = {
-    "Group 1": [
+    "Grp1_Donna_to_SanJuan": [
         "Donna","Mission","Monte Alto","Sam Fordyce","San Carlos","Seguin","Sam Houston",
         "Wilson","Thigpen","Zavala","Salinas","San Juan"
     ],
-    "Group 2": [
+    "Grp2_Chapa_to_Longoria": [
         "Chapa","Escandon","Guerra","Palacios","Singleterry","Edinburg North",
         "Alvarez","Farias","Longoria"
     ],
-    "Group 3": ["Mercedes","Edinburg"],
-    "Group 4": ["Guzman"]
+    "Grp3_Mercedes_Edinburg": ["Mercedes","Edinburg"],
+    "Grp4_Guzman": ["Guzman"]
 }
 
 def center_matches_simple(full_name: str, simple: str) -> bool:
+    """Return True if the normalized token of 'simple' appears inside the normalized full center string."""
     return _norm_simple(simple) in _canon(full_name)
 
 def _detect_age_tag(text: str) -> str:
@@ -126,22 +131,29 @@ if 'Class Name' in df.columns:
     mask_blank = df['Class Name'].astype(str).str.strip().eq('') | df['Class Name'].isna()
     df = df[~(mask_total | mask_blank)].copy()
 
-# months present; we will keep both 9 and 10 if available
-months_present = sorted({int(m) for m in df['Month'].dropna().astype(int).unique()})
-target_months = [m for m in [9,10] if m in months_present] or [months_present[-1]]
-sub_df = df[df['Month'].isin(target_months)].copy()
+# month select: pick the latest month number present
+months_present = []
+if 'Month' in df.columns:
+    parsed = set()
+    for m in df['Month'].dropna().unique():
+        try:
+            parsed.add(int(float(m)))
+        except:
+            pass
+    months_present = sorted(parsed)
 
-# ADA for latest month (for ADA & Dashboard)
-latest_m = max(target_months)
-m_df = df[df['Month'] == latest_m].copy()
+assert months_present, "No valid Month values found."
+sel_m = months_present[-1]
 
-# ADA build (latest month only, like before)
+m_df = df[df['Month'] == sel_m].copy()
+
+# ADA build
 blocks = [_center_block(g) for _, g in m_df.groupby("Center Name", dropna=False)]
 ada = pd.concat(blocks, ignore_index=True) if blocks else pd.DataFrame(columns=base_cols)
 agency_overall = _weighted_avg_rate(m_df)
 ada = pd.concat([ada, pd.DataFrame([{
     "Year": m_df['Year'].dropna().iloc[0] if m_df['Year'].notna().any() else np.nan,
-    "Month": latest_m,
+    "Month": sel_m,
     "Center Name": "HCHSP (Overall)",
     "Class Name": "TOTAL",
     "Funded": m_df['Funded'].sum(min_count=1),
@@ -149,22 +161,22 @@ ada = pd.concat([ada, pd.DataFrame([{
     "Attendance Rate": float(agency_overall) if pd.notna(agency_overall) else np.nan,
 }])], ignore_index=True)
 
-# ---------- Write Excel with updated group naming and condensed summary tables ----------
-out_path = Path(f"/mnt/data/ADA_Dashboard_GROUPS_FILTER_{datetime.now(ZoneInfo('America/Chicago')).strftime('%Y%m%d_%H%M')}.xlsx")
+# ---------- Write Excel with updated grouping ----------
+out_path = Path(f"/mnt/data/ADA_Dashboard_FINAL_MATCHED_{datetime.now(ZoneInfo('America/Chicago')).strftime('%Y%m%d_%H%M')}.xlsx")
 
 with pd.ExcelWriter(out_path, engine="xlsxwriter") as writer:
     wb = writer.book
-    BLUE = "#2E75B6"; RED = "#C00000"; GREY_HEADER = "#E6E6E6"; LIGHT_GRID = "#D9D9D9"
+    BLUE = "#2E75B6"; RED = "#C00000"; GREY_HEADER = "#E6E6E6"; LIGHT_GRID = "#D9D9D9"; DARK_TEXT = "#1F2937"
 
     header_fmt = wb.add_format({"bold": True, "font_color": "white", "bg_color": BLUE, "align": "center", "valign": "vcenter"})
     pct_fmt    = wb.add_format({"num_format": "0.00%"})
     bold_fmt   = wb.add_format({"bold": True})
     title_fmt  = wb.add_format({"bold": True, "font_size": 16})
-    s_head     = wb.add_format({"bold": True, "bg_color": GREY_HEADER, "border": 1, "font_size": 9})
-    s_cell     = wb.add_format({"border": 1, "font_size": 9})
-    s_pct      = wb.add_format({"border": 1, "num_format": "0.00%", "font_size": 9})
+    s_head     = wb.add_format({"bold": True, "bg_color": GREY_HEADER, "border": 1})
+    s_cell     = wb.add_format({"border": 1})
+    s_pct      = wb.add_format({"border": 1, "num_format": "0.00%"})
 
-    # ADA sheet (latest month)
+    # ADA sheet
     ada.to_excel(writer, index=False, sheet_name="ADA", startrow=3)
     ws = writer.sheets["ADA"]
     header_row = 3
@@ -187,27 +199,29 @@ with pd.ExcelWriter(out_path, engine="xlsxwriter") as writer:
     last_row = header_row + len(ada)
     ws.freeze_panes(header_row + 1, 0)
     ws.autofilter(header_row, 0, last_row, last_col)
-    ws.merge_range(0, 1, 1, last_col, f"Daily Attendance Rate 25-26 — {_month_name(latest_m)}", title_fmt)
+    ws.merge_range(0, 1, 1, last_col, f"Daily Attendance Rate 25-26 — {_month_name(sel_m)}", title_fmt)
 
-    # Dashboard (latest month same as before)
+    # Dashboard quick
     dash = wb.add_worksheet("Dashboard")
     dash.write(0, 1, "Daily Attendance Dashboard", wb.add_format({"bold": True, "font_size": 24, "font_color": BLUE}))
-    dash.write(2, 1, f"Month: {_month_name(latest_m)}")
+    dash.write(2, 1, f"Month: {_month_name(sel_m)}")
     dash.write(3, 1, f"Exported {datetime.now(ZoneInfo('America/Chicago')).strftime('%m/%d/%Y %I:%M %p %Z')}")
 
-    # Ranked table
+    left_r, left_c = 6, 1
+    dash.write(left_r, left_c,   "Center Name",   s_head)
+    dash.write(left_r, left_c+1, "Attendance %",  s_head)
+
     centers = (
         m_df.groupby("Center Name", dropna=False)
             .apply(_weighted_avg_rate)
             .reset_index(name="Attendance %")
             .sort_values("Attendance %", ascending=False)
     )
-    left_r, left_c = 6, 1
-    dash.write(left_r, left_c,   "Center Name",   s_head)
-    dash.write(left_r, left_c+1, "Attendance %",  s_head)
+
     for i, row in centers.iterrows():
         dash.write_string(left_r + 1 + i, left_c, "" if pd.isna(row["Center Name"]) else str(row["Center Name"]), s_cell)
         dash.write_number(left_r + 1 + i, left_c + 1, (row["Attendance %"] / 100.0) if pd.notna(row["Attendance %"]) else 0, s_pct)
+
     last_tab_row = left_r + len(centers)
     dash.autofilter(left_r, left_c, last_tab_row, left_c + 1)
     dash.set_column(left_c, left_c, 30)
@@ -215,140 +229,119 @@ with pd.ExcelWriter(out_path, engine="xlsxwriter") as writer:
 
     bar = wb.add_chart({"type": "column"})
     bar.add_series({
-        "name": f"Attendance Rate — {_month_name(latest_m)}",
+        "name": f"Attendance Rate — {_month_name(sel_m)}",
         "categories": ["Dashboard", left_r + 1, left_c, last_tab_row, left_c],
         "values":     ["Dashboard", left_r + 1, left_c + 1, last_tab_row, left_c + 1],
         "data_labels": {"value": True, "num_format": "0.00%", "font": {"bold": True, "size": 9}},
     })
     bar.set_y_axis({"num_format": "0.00%"})
-    bar.set_title({"name": f"Attendance Rate — {_month_name(latest_m)}"})
+    bar.set_title({"name": f"Attendance Rate — {_month_name(sel_m)}"})
     dash.insert_chart(5, 5, bar, {"x_scale": 1.25, "y_scale": 1.15})
 
     dash.write(last_tab_row + 3, left_c,   "Agency Overall %", s_head)
     dash.write_number(last_tab_row + 3, left_c+1, (agency_overall/100.0) if pd.notna(agency_overall) else 0, s_pct)
 
-    # ---------- Grouped campus sheets with condensed tables & month filter ----------
-    USED_FULL = set()
-    grouped_src = _append_guzman_age(sub_df)  # include both Sept/Oct where available
+    # ---------- Grouped campus sheets (match by token, keep full names) ----------
+    USED_FULL = set()  # track normalized full center names already placed
+    grouped_src = _append_guzman_age(m_df)
 
     def write_group_sheet(sheet_name: str, simples: list, df_src: pd.DataFrame):
-        ws_grp = wb.add_worksheet(sheet_name[:31])
+        ws_name = sheet_name[:31]
+        ws_grp = wb.add_worksheet(ws_name)
 
-        # Match full center names by tokens
+        # Map simple tokens to matching full-center names present in data, excluding already used
         present_full = df_src['Center Name'].dropna().unique().tolist()
         matched_full = []
         for simple in simples:
             token = _norm_simple(simple)
+            # find all centers whose normalized name contains this token
             for full in present_full:
                 if center_matches_simple(full, token):
-                    key = _canon(full)
-                    if key not in { _canon(x) for x in matched_full } and key not in USED_FULL:
+                    k = _canon(full)
+                    if k not in { _canon(x) for x in matched_full } and k not in USED_FULL:
                         matched_full.append(full)
 
         if not matched_full:
-            ws_grp.write(0, 0, f"No data for months {', '.join(_month_name(m) for m in target_months)} for: {', '.join(simples)}")
+            ws_grp.write(0, 0, f"No data for this month for: {', '.join(simples)}")
             return
 
-        # Build ADA-style blocks for each month separately, stacking them all together
-        # (We keep ADA tables per center per month, so filtering remains natural)
-        start_row = 3
+        # Build ADA-style blocks in the order of matched_full
+        out_tables = []
         for fn in matched_full:
-            for m in target_months:
-                g = df_src[(df_src["Center Name"].astype(str) == fn) & (df_src["Month"] == m)]
-                if g.empty:
-                    continue
-                block = _center_block(g)
+            g = df_src[df_src["Center Name"].astype(str) == fn]
+            if g.empty:
+                continue
+            out_tables.append(_center_block(g))
 
-                # header for each block
-                ws_grp.write(start_row - 2, 0, f"{fn} — {_month_name(m)}", bold_fmt)
-                for c, name in enumerate(block.columns):
-                    ws_grp.write(start_row, c, name, header_fmt)
-                ws_grp.set_row(start_row, 26)
+        if not out_tables:
+            ws_grp.write(0, 0, f"No rows after filtering for: {', '.join(simples)}")
+            return
 
-                # values
-                for r in range(len(block)):
-                    for c, col in enumerate(block.columns):
-                        val = block.iloc[r, c]
-                        if col == "Attendance Rate":
-                            ws_grp.write_number(start_row + 1 + r, c, (float(val)/100.0) if pd.notna(val) else 0, pct_fmt)
-                        else:
-                            ws_grp.write(start_row + 1 + r, c, val)
-                    if str(block.iloc[r]["Class Name"]).upper() == "TOTAL":
-                        ws_grp.set_row(start_row + 1 + r, None, bold_fmt)
+        grp_df = pd.concat(out_tables, ignore_index=True)
 
-                # autosize
-                for i, col in enumerate(block.columns):
-                    width = max(12, min(44, int(block[col].astype(str).map(len).max()) + 2))
-                    ws_grp.set_column(i, i, width)
+        # header (ADA style)
+        start_row = 3
+        for c, name in enumerate(grp_df.columns):
+            ws_grp.write(start_row, c, name, header_fmt)
+        ws_grp.set_row(start_row, 26)
 
-                start_row = start_row + 1 + len(block) + 2  # spacing between blocks
+        # values
+        for r in range(len(grp_df)):
+            for c, col in enumerate(grp_df.columns):
+                val = grp_df.iloc[r, c]
+                if col == "Attendance Rate":
+                    ws_grp.write_number(start_row + 1 + r, c, (float(val)/100.0) if pd.notna(val) else 0, pct_fmt)
+                else:
+                    ws_grp.write(start_row + 1 + r, c, val)
+            if str(grp_df.iloc[r]["Class Name"]).upper() == "TOTAL":
+                ws_grp.set_row(start_row + 1 + r, None, bold_fmt)
 
-        # freeze top after first header row
-        ws_grp.freeze_panes(4, 0)
+        # autosize
+        for i, col in enumerate(grp_df.columns):
+            width = max(12, min(44, int(grp_df[col].astype(str).map(len).max()) + 2))
+            ws_grp.set_column(i, i, width)
 
-        # ---------- Condensed summary table (for charts + filter by Month) ----------
-        # Build Month-Center totals from df_src filtered to matched_full
-        filt = df_src[df_src["Center Name"].isin(matched_full)].copy()
-        sums = (
-            filt.groupby(["Month","Center Name"], dropna=False)
-                .apply(_weighted_avg_rate)
-                .reset_index(name="Attendance %")
-                .sort_values(["Month","Attendance %"], ascending=[True, False])
+        # freeze + filter
+        last_col = len(grp_df.columns) - 1
+        last_row = start_row + len(grp_df)
+        ws_grp.freeze_panes(start_row + 1, 0)
+        ws_grp.autofilter(start_row, 0, last_row, last_col)
+
+        # Summary (TOTAL rows) + chart
+        centers_sum = (
+            grp_df[grp_df["Class Name"].astype(str).str.upper().eq("TOTAL")]
+            .copy()
+            .sort_values("Attendance Rate", ascending=False)
         )
+        if not centers_sum.empty:
+            sum_r, sum_c = last_row + 2, 0
+            ws_grp.write(sum_r,   sum_c,   "Center Name", s_head)
+            ws_grp.write(sum_r,   sum_c+1, "Attendance %", s_head)
+            for i, row in centers_sum.iterrows():
+                ws_grp.write_string(sum_r + 1 + i, sum_c,   str(row["Center Name"]), s_cell)
+                ws_grp.write_number(sum_r + 1 + i, sum_c+1, (float(row["Attendance Rate"])/100.0 if pd.notna(row["Attendance Rate"]) else 0), s_pct)
 
-        # Small, compact table
-        small_r, small_c = start_row, 0
-        ws_grp.write(small_r,   small_c,   "Month",        s_head)
-        ws_grp.write(small_r,   small_c+1, "Center Name",  s_head)
-        ws_grp.write(small_r,   small_c+2, "Attendance %", s_head)
-        for i, row in sums.iterrows():
-            ws_grp.write_string(small_r + 1 + i, small_c,   _month_name(int(row["Month"])) if pd.notna(row["Month"]) else "", s_cell)
-            ws_grp.write_string(small_r + 1 + i, small_c+1, str(row["Center Name"]), s_cell)
-            ws_grp.write_number(small_r + 1 + i, small_c+2, (row["Attendance %"]/100.0 if pd.notna(row["Attendance %"]) else 0), s_pct)
-
-        last_row_small = small_r + len(sums)
-        ws_grp.autofilter(small_r, small_c, last_row_small, small_c + 2)
-        ws_grp.set_column(small_c, small_c, 10)   # Month
-        ws_grp.set_column(small_c+1, small_c+1, 36)  # Center
-        ws_grp.set_column(small_c+2, small_c+2, 14)  # %
-
-        # Two charts: one for Sept, one for Oct (if present)
-        months_for_charts = [m for m in target_months if m in sums["Month"].unique()]
-        chart_col_offset = 5
-        for idx, m in enumerate(months_for_charts):
-            m_sums = sums[sums["Month"] == m]
-            if m_sums.empty:
-                continue
-            # place chart to the right of the condensed table
             chart = wb.add_chart({"type": "column"})
-            # categories and values reference the current small table area filtered by month block
-            # compute relative ranges
-            start_idx = sums[sums["Month"] == m].index.min()
-            end_idx   = sums[sums["Month"] == m].index.max()
-            # We can't rely on absolute index, so rebuild start/end row offsets
-            # Let's compute row offsets by enumerating
-            rows_for_m = [i for i, (_, r) in enumerate(sums.iterrows()) if int(r["Month"]) == int(m)]
-            if not rows_for_m:
-                continue
-            start_off = rows_for_m[0]
-            end_off   = rows_for_m[-1]
             chart.add_series({
-                "name": f"{_month_name(m)} Attendance %",
-                "categories": [sheet_name, small_r + 1 + start_off, small_c + 1, small_r + 1 + end_off, small_c + 1],
-                "values":     [sheet_name, small_r + 1 + start_off, small_c + 2, small_r + 1 + end_off, small_c + 2],
-                "data_labels": {"value": True, "num_format": "0.00%", "font": {"size": 9}},
+                "name": f"{sheet_name} — Attendance %",
+                "categories": [ws_name, sum_r + 1, sum_c,   sum_r + len(centers_sum), sum_c],
+                "values":     [ws_name, sum_r + 1, sum_c+1, sum_r + len(centers_sum), sum_c+1],
+                "data_labels": {"value": True, "num_format": "0.00%", "font": {"bold": True, "size": 9}},
             })
             chart.set_y_axis({"num_format": "0.00%"})
-            chart.set_title({"name": f"{_month_name(m)} — Attendance %"})
-            ws_grp.insert_chart(small_r, small_c + chart_col_offset + idx*8, chart, {"x_scale": 1.1, "y_scale": 1.0})
+            chart.set_legend({"none": True})
+            chart.set_title({"name": f"{sheet_name} — Attendance %"})
+            ws_grp.insert_chart(sum_r, sum_c + 3, chart, {"x_scale": 1.15, "y_scale": 1.05})
 
-        # Mark used centers
+        # Mark used full names so they won't appear again on later sheets
         for fn in matched_full:
             USED_FULL.add(_canon(fn))
 
-    # Create sheets in requested order, now named Group 1..4, using both Sept/Oct data
-    for sheet_name, simple_list in CENTER_GROUPS_SIMPLE.items():
-        write_group_sheet(sheet_name, simple_list, grouped_src)
+    # Create sheets in order using token matching, preserving full names in output
+    write_group_sheet("Grp1_Donna_to_SanJuan", CENTER_GROUPS_SIMPLE["Grp1_Donna_to_SanJuan"], _append_guzman_age(m_df))
+    write_group_sheet("Grp2_Chapa_to_Longoria", CENTER_GROUPS_SIMPLE["Grp2_Chapa_to_Longoria"], _append_guzman_age(m_df))
+    write_group_sheet("Grp3_Mercedes_Edinburg", CENTER_GROUPS_SIMPLE["Grp3_Mercedes_Edinburg"], _append_guzman_age(m_df))
+    write_group_sheet("Grp4_Guzman",            CENTER_GROUPS_SIMPLE["Grp4_Guzman"],            _append_guzman_age(m_df))
 
 out_path
 
