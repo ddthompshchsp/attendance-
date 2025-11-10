@@ -20,19 +20,28 @@ GREY = "#E6E6E6"
 # NOTE: Guzman is NOT in Group 1; it is split into two dedicated sheets (4yo / 3yo)
 GROUPS = {
     "Group 1": [
-        "Donna","Mission","Monte Alto","Sam Fordyce","San Carlos","Seguin","Sam Houston",
+        "Donna","Mission","Monte Alto","Sam Fordyce","Seguin","Sam Houston",
         "Wilson","Thigpen","Zavala","Salinas","San Juan"
+        # removed from G1: Singleterry, Guzman
     ],
     "Group 2": [
         "Chapa","Escandon","Guerra","Palacios","Singleterry","Edinburg North",
         "Alvarez","Farias","Longoria"
     ],
-    "Group 3": ["Mercedes","Edinburg"],
-    # Guzman handled separately
+    "Group 3": [
+        "Mercedes","Edinburg","Camarena"  # added Camarena; removed Edinburg North & San Carlos
+    ],
+    # Guzman handled separately (split sheets)
 }
 
 # Simple alias fixes for token matching (keeps display names untouched)
-SIMPLE_ALIASES = {"fairs":"farias","sequin":"seguin","chaps":"chapa"}
+SIMPLE_ALIASES = {
+    "fairs":"farias",
+    "sequin":"seguin",
+    "chaps":"chapa",
+    "camerana":"camarena",  # common typo helper
+    "camarano":"camarena"
+}
 
 # ---- HELPERS ----
 def _month_name(m: int) -> str:
@@ -269,7 +278,7 @@ def build_monthly_excel(df_all: pd.DataFrame, sel_months: list[int]) -> bytes:
                                 else:
                                     ws.write(start_row + 1 + r, c, val)
                         if str(block.iloc[r]["Class Name"]).upper() == "TOTAL":
-                            ws.set_row(start_row + 1 + r, None, bold_fmt)
+                            ws.set_row(start_row + 1 + r, None, pd.Series())
                     # autosize
                     for i, col in enumerate(block.columns):
                         width = max(12, min(44, int(block[col].astype(str).map(len).max()) + 2))
@@ -289,19 +298,14 @@ def build_monthly_excel(df_all: pd.DataFrame, sel_months: list[int]) -> bytes:
             ws.write(small_r,   small_c+1, "Center Name",  wb.add_format({"bold": True, "bg_color": GREY, "border": 1, "font_size": 9}))
             ws.write(small_r,   small_c+2, "Attendance %", wb.add_format({"bold": True, "bg_color": GREY, "border": 1, "font_size": 9}))
             for i, row in sums.iterrows():
-                ws.write_string(small_r + 1 + i, small_c,   _month_name(int(row["Month"])) if pd.notna(row["Month"]) else "", s_cell)
-                ws.write_string(small_r + 1 + i, small_c+1, str(row["Center Name"]), s_cell)
+                ws.write_string(small_r + 1 + i, small_c,   _month_name(int(row["Month"])) if pd.notna(row["Month"]) else "", wb.add_format({"border": 1, "font_size": 9}))
+                ws.write_string(small_r + 1 + i, small_c+1, str(row["Center Name"]), wb.add_format({"border": 1, "font_size": 9}))
                 if pd.isna(row["Attendance %"]):
-                    ws.write_blank(small_r + 1 + i, small_c+2, None, s_pct)
+                    ws.write_blank(small_r + 1 + i, small_c+2, None, wb.add_format({"border": 1, "num_format": "0.00%", "font_size": 9}))
                 else:
-                    ws.write_number(small_r + 1 + i, small_c+2, float(row["Attendance %"])/100.0, s_pct)
-            last_row_small = small_r + len(sums)
-            ws.autofilter(small_r, small_c, last_row_small, small_c + 2)
-            ws.set_column(small_c, small_c, 10)
-            ws.set_column(small_c+1, small_c+1, 36)
-            ws.set_column(small_c+2, small_c+2, 14)
+                    ws.write_number(small_r + 1 + i, small_c+2, float(row["Attendance %"])/100.0, wb.add_format({"border": 1, "num_format": "0.00%", "font_size": 9}))
 
-            # Charts: one per month (e.g., Sept / Oct)
+            # Charts per month
             months_for_charts = sorted(df_src["Month"].dropna().unique().astype(int).tolist())
             chart_col_offset = 5
             for idx, m in enumerate(months_for_charts):
@@ -421,7 +425,7 @@ def build_cumulative_excel(df_all: pd.DataFrame, start_m: int, end_m: int) -> by
             ch.set_title({"name": "Centers — Cumulative ADA"})
             ws0.insert_chart(2, 5, ch, {"x_scale": 1.2, "y_scale": 1.1})
 
-        # Per-group sheets
+        # Per-group sheets (uses updated GROUPS)
         present_full2 = df_rng['Center Name'].dropna().unique().tolist()
         for sheet_name, simple_list in GROUPS.items():
             matched = _match_centers(simple_list, present_full2)
@@ -565,5 +569,3 @@ with st.expander("Download individual files"):
         mime="application/vnd.openxmlformats-officedocument.spreadsheetml.sheet",
         key="cum"
     )
-
-
