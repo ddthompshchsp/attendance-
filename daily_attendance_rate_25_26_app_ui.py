@@ -565,5 +565,3 @@ with st.expander("Download individual files"):
         mime="application/vnd.openxmlformats-officedocument.spreadsheetml.sheet",
         key="cum"
     )
-
-
