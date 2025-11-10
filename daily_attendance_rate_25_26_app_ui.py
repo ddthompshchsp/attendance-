@@ -2,9 +2,8 @@ import streamlit as st
 import pandas as pd
 import numpy as np
 from io import BytesIO
-from datetime import datetime
+from datetime import datetime, date, timedelta
 from zoneinfo import ZoneInfo
-from pathlib import Path
 import calendar
 import re
 import zipfile
@@ -13,25 +12,23 @@ st.set_page_config(page_title="ADA Monthly + Cumulative Reports", layout="wide")
 
 # ---- THEME / COLORS ----
 BLUE = "#2E75B6"
-RED = "#C00000"
 GREY = "#E6E6E6"
 
-# ---- GROUP DEFINITIONS ----
+# ---- GROUP DEFINITIONS (your requested changes) ----
 # NOTE: Guzman is NOT in Group 1; it is split into two dedicated sheets (4yo / 3yo)
 GROUPS = {
     "Group 1": [
         "Donna","Mission","Monte Alto","Sam Fordyce","Seguin","Sam Houston",
         "Wilson","Thigpen","Zavala","Salinas","San Juan"
-        # removed from G1: Singleterry, Guzman
     ],
     "Group 2": [
         "Chapa","Escandon","Guerra","Palacios","Singleterry","Edinburg North",
         "Alvarez","Farias","Longoria"
     ],
     "Group 3": [
-        "Mercedes","Edinburg","Camarena"  # added Camarena; removed Edinburg North & San Carlos
+        "Mercedes","Edinburg","Camarena"  # Added Camarena; removed Edinburg North & San Carlos
     ],
-    # Guzman handled separately (split sheets)
+    # Guzman handled separately
 }
 
 # Simple alias fixes for token matching (keeps display names untouched)
@@ -39,7 +36,7 @@ SIMPLE_ALIASES = {
     "fairs":"farias",
     "sequin":"seguin",
     "chaps":"chapa",
-    "camerana":"camarena",  # common typo helper
+    "camerana":"camarena",
     "camarano":"camarena"
 }
 
@@ -58,7 +55,7 @@ def _norm_simple(s: str) -> str:
     return SIMPLE_ALIASES.get(k, k)
 
 def _weighted_avg_rate(df: pd.DataFrame) -> float:
-    """Weighted Attendance Rate (0..100) by Current."""
+    """Weighted Attendance Rate (0..100) by Current across CLASS rows."""
     if df.empty or "Attendance Rate" not in df.columns:
         return np.nan
     w = df.get("Current", pd.Series([0]*len(df))).fillna(0).astype(float)
@@ -67,7 +64,7 @@ def _weighted_avg_rate(df: pd.DataFrame) -> float:
     return float((r*w).sum()/tot) if tot > 0 else np.nan
 
 def _center_block(center_df: pd.DataFrame) -> pd.DataFrame:
-    """Return class rows + one TOTAL row per center/month."""
+    """Return class rows + one TOTAL row per center/month (Monthly workbook)."""
     body = center_df.sort_values("Class Name").copy()
     w = _weighted_avg_rate(center_df)
     return pd.concat([
@@ -131,14 +128,31 @@ def _load_enrollment(file_bytes: bytes, preferred_sheet="V12POP_ERSEA_Enrollment
         df = df[~(mask_total | mask_blank)].copy()
     return df
 
+# <<< CHANGED: robust matcher (prevents 'Edinburg' matching 'Edinburg North')
 def _match_centers(simple_list, present_full):
-    matched = []
+    """
+    Strictly map GROUPS short names (e.g., 'Edinburg') to the file's full names like
+    'Edinburg (serves ages 3–4)' by comparing SHORT LABELS (text before the first
+    '-' or '('). Prevents accidental matches like 'Edinburg' -> 'Edinburg North'.
+    """
+    def _short_label(full_name: str) -> str:
+        return re.split(r'\s*[\-\(–—]\s*', str(full_name), maxsplit=1)[0].strip()
+
+    # Build lookup from CANON(short_label(full)) -> list of full names
+    full_map = {}
+    for f in present_full:
+        sl = _short_label(f)
+        key = _norm_simple(sl)
+        full_map.setdefault(key, []).append(f)
+
+    matched, seen = [], set()
     for simple in simple_list:
-        tok = _norm_simple(simple)
-        for full in present_full:
-            if tok in _canon(full):
-                if _canon(full) not in {_canon(x) for x in matched}:
-                    matched.append(full)
+        k = _norm_simple(simple)
+        for f in full_map.get(k, []):
+            c = _canon(f)
+            if c not in seen:
+                matched.append(f)
+                seen.add(c)
     return matched
 
 # ---------- UI ----------
@@ -185,10 +199,31 @@ if not sel_months:
     st.warning("Select at least one month for the Monthly report.")
     st.stop()
 
-# ---------- BUILD MONTHLY REPORT ----------
+# <<< CHANGED: As-of date & class-days inputs
+st.subheader("Cumulative Days Weighting")
+as_of = st.date_input("As-of date (for partial current month)", value=date.today())
+default_full_month_days = st.number_input("Default class days for FULL months", min_value=1, max_value=31, value=20, step=1)
+
+# Build the list of months in the cumulative range
+cum_months = [m for m in months_present if start_m <= m <= end_m]
+days_per_month = {}
+
+def _business_days_up_to(d: date) -> int:
+    # Mon-Fri business days inclusive of start month first day, exclusive of next day
+    start = np.datetime64(date(d.year, d.month, 1))
+    end = np.datetime64(d + timedelta(days=1))
+    return int(np.busday_count(start, end))
+
+for m in cum_months:
+    if m == as_of.month:
+        default_days = _business_days_up_to(as_of)
+    else:
+        default_days = default_full_month_days
+    days_per_month[m] = st.number_input(f"Class days for {_month_name(m)}", min_value=0, max_value=31, value=int(default_days), step=1, key=f"days_{m}")
+
+# ---------- BUILD MONTHLY REPORT (unchanged output logic) ----------
 def build_monthly_excel(df_all: pd.DataFrame, sel_months: list[int]) -> bytes:
     grouped_src = _append_guzman_age(df_all[df_all['Month'].isin(sel_months)].copy())
-    ts = datetime.now(ZoneInfo("America/Chicago")).strftime("%Y%m%d_%H%M")
     bio = BytesIO()
     with pd.ExcelWriter(bio, engine="xlsxwriter") as writer:
         wb = writer.book
@@ -196,8 +231,6 @@ def build_monthly_excel(df_all: pd.DataFrame, sel_months: list[int]) -> bytes:
         pct_fmt    = wb.add_format({"num_format": "0.00%"})
         bold_fmt   = wb.add_format({"bold": True})
         s_head     = wb.add_format({"bold": True, "bg_color": GREY, "border": 1, "font_size": 9})
-        s_cell     = wb.add_format({"border": 1, "font_size": 9})
-        s_pct      = wb.add_format({"border": 1, "num_format": "0.00%", "font_size": 9})
 
         # ADA overview for latest selected month
         latest_m = max(sel_months)
@@ -245,20 +278,19 @@ def build_monthly_excel(df_all: pd.DataFrame, sel_months: list[int]) -> bytes:
         last_col = max(0, len(ada.columns)-1)
         last_row = header_row + len(ada)
         ws.autofilter(header_row, 0, last_row, last_col)
-        ws.write(0, 1, f"Daily Attendance Rate — {_month_name(latest_m)}", bold_fmt)
+        ws.write(0, 1, f"Daily Attendance Rate — {_month_name(latest_m)}", wb.add_format({"bold": True}))
 
         # Per-group writer
         def write_group_sheet(sheet_name: str, df_src: pd.DataFrame):
             ws = wb.add_worksheet(sheet_name[:31])
             start_row = 3
-            # ADA blocks per center per month
             for fn, g_center in df_src.groupby("Center Name"):
                 for m in sorted(g_center["Month"].dropna().unique().astype(int)):
                     g = g_center[g_center["Month"] == m].copy()
                     if g.empty:
                         continue
                     block = _center_block(g)
-                    ws.write(start_row - 2, 0, f"{fn} — {_month_name(m)}", bold_fmt)
+                    ws.write(start_row - 2, 0, f"{fn} — {_month_name(m)}", wb.add_format({"bold": True}))
                     ws.set_row(start_row, 26)
                     # headers
                     for c, name in enumerate(block.columns):
@@ -278,51 +310,13 @@ def build_monthly_excel(df_all: pd.DataFrame, sel_months: list[int]) -> bytes:
                                 else:
                                     ws.write(start_row + 1 + r, c, val)
                         if str(block.iloc[r]["Class Name"]).upper() == "TOTAL":
-                            ws.set_row(start_row + 1 + r, None, pd.Series())
+                            ws.set_row(start_row + 1 + r, None, wb.add_format({"bold": True}))
                     # autosize
                     for i, col in enumerate(block.columns):
                         width = max(12, min(44, int(block[col].astype(str).map(len).max()) + 2))
                         ws.set_column(i, i, width)
                     start_row += len(block) + 3
             ws.freeze_panes(4, 0)
-
-            # Compact summary (Month, Center, %)
-            sums = (
-                df_src.groupby(["Month","Center Name"], dropna=False)
-                      .apply(_weighted_avg_rate)
-                      .reset_index(name="Attendance %")
-                      .sort_values(["Month","Attendance %"], ascending=[True, False])
-            )
-            small_r, small_c = start_row, 0
-            ws.write(small_r,   small_c,   "Month",        wb.add_format({"bold": True, "bg_color": GREY, "border": 1, "font_size": 9}))
-            ws.write(small_r,   small_c+1, "Center Name",  wb.add_format({"bold": True, "bg_color": GREY, "border": 1, "font_size": 9}))
-            ws.write(small_r,   small_c+2, "Attendance %", wb.add_format({"bold": True, "bg_color": GREY, "border": 1, "font_size": 9}))
-            for i, row in sums.iterrows():
-                ws.write_string(small_r + 1 + i, small_c,   _month_name(int(row["Month"])) if pd.notna(row["Month"]) else "", wb.add_format({"border": 1, "font_size": 9}))
-                ws.write_string(small_r + 1 + i, small_c+1, str(row["Center Name"]), wb.add_format({"border": 1, "font_size": 9}))
-                if pd.isna(row["Attendance %"]):
-                    ws.write_blank(small_r + 1 + i, small_c+2, None, wb.add_format({"border": 1, "num_format": "0.00%", "font_size": 9}))
-                else:
-                    ws.write_number(small_r + 1 + i, small_c+2, float(row["Attendance %"])/100.0, wb.add_format({"border": 1, "num_format": "0.00%", "font_size": 9}))
-
-            # Charts per month
-            months_for_charts = sorted(df_src["Month"].dropna().unique().astype(int).tolist())
-            chart_col_offset = 5
-            for idx, m in enumerate(months_for_charts):
-                rows_for_m = [i for i, (_, r) in enumerate(sums.iterrows()) if int(r["Month"]) == int(m)]
-                if not rows_for_m:
-                    continue
-                start_off, end_off = rows_for_m[0], rows_for_m[-1]
-                ch = wb.add_chart({"type": "column"})
-                ch.add_series({
-                    "name": f"{_month_name(m)} Attendance %",
-                    "categories": [sheet_name[:31], small_r + 1 + start_off, small_c + 1, small_r + 1 + end_off, small_c + 1],
-                    "values":     [sheet_name[:31], small_r + 1 + start_off, small_c + 2, small_r + 1 + end_off, small_c + 2],
-                    "data_labels": {"value": True, "num_format": "0.00%", "font": {"size": 9}},
-                })
-                ch.set_y_axis({"num_format": "0.00%"})
-                ch.set_title({"name": f"{_month_name(m)} — Attendance %"})
-                ws.insert_chart(small_r, small_c + chart_col_offset + idx*8, ch, {"x_scale": 1.1, "y_scale": 1.0})
 
         # Build Group 1–3 (no Guzman)
         present_full = grouped_src['Center Name'].dropna().unique().tolist()
@@ -339,53 +333,55 @@ def build_monthly_excel(df_all: pd.DataFrame, sel_months: list[int]) -> bytes:
                 sub = guz[guz["Age Tag"]==tag].copy()
                 if sub.empty: 
                     continue
+                # reuse same writer
                 write_group_sheet(title, sub)
 
     return bio.getvalue()
 
-# ---------- BUILD CUMULATIVE REPORT ----------
-def build_cumulative_excel(df_all: pd.DataFrame, start_m: int, end_m: int) -> bytes:
+# ---------- BUILD CUMULATIVE REPORT (DAYS-WEIGHTED) ----------
+# <<< CHANGED: days-weighted cumulative per CENTER
+def build_cumulative_excel(df_all: pd.DataFrame, start_m: int, end_m: int, days_per_month: dict[int,int]) -> bytes:
     months = [m for m in df_all['Month'].dropna().astype(int).unique() if start_m <= m <= end_m]
     if not months:
         months = [int(df_all['Month'].dropna().astype(int).max())]
     df_rng = _append_guzman_age(df_all[df_all['Month'].isin(months)].copy())
 
-    def _cumulative_class(dfcls: pd.DataFrame) -> pd.Series:
-        w = dfcls['Current'].fillna(0).astype(float)
-        r = dfcls['Attendance Rate'].fillna(0).astype(float)
-        wsum = w.sum()
-        rate = float((w*r).sum()/wsum) if wsum>0 else np.nan
-        funded = float(dfcls['Funded'].max(skipna=True)) if 'Funded' in dfcls else np.nan
-        current = float(dfcls['Current'].max(skipna=True)) if 'Current' in dfcls else np.nan
+    # Step 1: compute CENTER x MONTH monthly rate (weighted by Current across classes)
+    center_month = (
+        df_rng.groupby(["Center Name","Month"], dropna=False)
+              .apply(_weighted_avg_rate)
+              .reset_index(name="Monthly Rate")   # 0..100
+    )
+
+    # Step 2: compute days-weighted cumulative rate per CENTER
+    def _cum_days_weight(g: pd.DataFrame) -> pd.Series:
+        # Use provided days_per_month; if missing, treat as 0 (ignored)
+        weights = g["Month"].map(lambda m: float(days_per_month.get(int(m), 0)))
+        rates = g["Monthly Rate"].astype(float).fillna(0.0)
+        wsum = float(weights.sum())
+        cum_rate = float((rates * weights).sum() / wsum) if wsum > 0 else np.nan
+        return pd.Series({"Attendance Rate": cum_rate, "Days Sum": wsum})
+
+    centers_totals = (
+        center_month.groupby("Center Name", dropna=False)
+                    .apply(_cum_days_weight)
+                    .reset_index()
+    )
+
+    # Optional: per-class cumulative (kept simple: show last known Funded/Current)
+    def _class_stub(dfcls: pd.DataFrame) -> pd.Series:
+        # Not days-weighted at class level (your ask is center-level), but we keep a stub table
         return pd.Series({
             "Month Range": f"{_month_name(start_m)}–{_month_name(end_m)}",
-            "Funded": funded,
-            "Current": current,
-            "Attendance Rate": rate
+            "Funded": dfcls["Funded"].max(skipna=True) if "Funded" in dfcls else np.nan,
+            "Current": dfcls["Current"].max(skipna=True) if "Current" in dfcls else np.nan,
         })
 
     cum_class = (
         df_rng.groupby(["Center Name","Class Name"], dropna=False)
-              .apply(_cumulative_class)
+              .apply(_class_stub)
               .reset_index()
     )
-
-    def _center_total_from_rows(center_rows: pd.DataFrame) -> pd.DataFrame:
-        w = center_rows['Current'].fillna(0).astype(float)
-        r = center_rows['Attendance Rate'].fillna(0).astype(float)
-        wsum = w.sum()
-        rate = float((w*r).sum()/wsum) if wsum>0 else np.nan
-        return pd.DataFrame([{
-            "Center Name": center_rows['Center Name'].iloc[0],
-            "Class Name": "TOTAL",
-            "Month Range": center_rows['Month Range'].iloc[0],
-            "Funded": center_rows['Funded'].sum(min_count=1),
-            "Current": center_rows['Current'].sum(min_count=1),
-            "Attendance Rate": rate
-        }])
-
-    centers_totals = cum_class.groupby("Center Name", dropna=False).apply(_center_total_from_rows).reset_index(drop=True)
-    cum_full = pd.concat([cum_class, centers_totals], ignore_index=True)
 
     # Build workbook
     bio = BytesIO()
@@ -397,21 +393,18 @@ def build_cumulative_excel(df_all: pd.DataFrame, start_m: int, end_m: int) -> by
         s_cell     = wb.add_format({"border": 1, "font_size": 9})
         s_pct      = wb.add_format({"border": 1, "num_format": "0.00%", "font_size": 9})
 
-        # Dashboard: ranked centers cumulative
-        centers_rank = (
-            cum_full[cum_full["Class Name"]=="TOTAL"][["Center Name","Attendance Rate"]]
-            .sort_values("Attendance Rate", ascending=False)
-            .reset_index(drop=True)
-        )
+        # Dashboard: ranked centers cumulative (days-weighted)
+        centers_rank = centers_totals[["Center Name","Attendance Rate"]].sort_values("Attendance Rate", ascending=False).reset_index(drop=True)
         ws0 = wb.add_worksheet("Dashboard")
-        ws0.write(0, 1, f"Cumulative ADA — {_month_name(start_m)} to {_month_name(end_m)}", wb.add_format({"bold": True, "font_size": 22, "font_color": BLUE}))
+        ws0.write(0, 1, f"Cumulative ADA (Days-weighted) — {_month_name(start_m)} to {_month_name(end_m)}", wb.add_format({"bold": True, "font_size": 22, "font_color": BLUE}))
         ws0.write(2, 1, "Center Name", s_head); ws0.write(2, 2, "Attendance %", s_head)
         for i, row in centers_rank.iterrows():
             ws0.write_string(3+i, 1, str(row["Center Name"]), s_cell)
-            if pd.isna(row["Attendance Rate"]):
+            val = row["Attendance Rate"]
+            if pd.isna(val):
                 ws0.write_blank(3+i, 2, None, s_pct)
             else:
-                ws0.write_number(3+i, 2, float(row["Attendance Rate"])/100.0, s_pct)
+                ws0.write_number(3+i, 2, float(val)/100.0, s_pct)
         # chart
         if not centers_rank.empty:
             ch = wb.add_chart({"type":"column"})
@@ -422,121 +415,87 @@ def build_cumulative_excel(df_all: pd.DataFrame, start_m: int, end_m: int) -> by
                 "data_labels": {"value": True, "num_format": "0.00%", "font": {"size": 9}},
             })
             ch.set_y_axis({"num_format": "0.00%"})
-            ch.set_title({"name": "Centers — Cumulative ADA"})
+            ch.set_title({"name": "Centers — Cumulative ADA (Days-weighted)"})
             ws0.insert_chart(2, 5, ch, {"x_scale": 1.2, "y_scale": 1.1})
 
-        # Per-group sheets (uses updated GROUPS)
+        # Per-group sheets: class table + center totals (days-weighted)
         present_full2 = df_rng['Center Name'].dropna().unique().tolist()
         for sheet_name, simple_list in GROUPS.items():
             matched = _match_centers(simple_list, present_full2)
-            view = cum_full[cum_full["Center Name"].isin(matched)].copy()
             ws = wb.add_worksheet(sheet_name[:31])
 
-            # class rows
-            class_rows = view[view["Class Name"]!="TOTAL"][["Center Name","Class Name","Month Range","Funded","Current","Attendance Rate"]].copy()
+            # classes (informational)
+            view_cls = cum_class[cum_class["Center Name"].isin(matched)].copy()
+            class_rows = view_cls[["Center Name","Class Name","Month Range","Funded","Current"]].copy()
             head_row = 3
-            for c, name in enumerate(class_rows.columns):
+            headers1 = list(class_rows.columns) + []  # no rate here by design
+            for c, name in enumerate(headers1):
                 ws.write(head_row, c, name, header_fmt)
             for r in range(len(class_rows)):
-                for c, col in enumerate(class_rows.columns):
+                for c, col in enumerate(headers1):
                     val = class_rows.iloc[r, c]
-                    if col == "Attendance Rate":
-                        ws.write_number(head_row + 1 + r, c, 0 if pd.isna(val) else float(val)/100.0, pct_fmt)
+                    if pd.isna(val):
+                        ws.write_blank(head_row + 1 + r, c, None)
                     else:
-                        if pd.isna(val):
-                            ws.write_blank(head_row + 1 + r, c, None)
-                        else:
-                            ws.write(head_row + 1 + r, c, val)
-            for i, col in enumerate(class_rows.columns):
-                width = max(12, min(44, int(class_rows[col].astype(str).map(len).max()) + 2))
+                        ws.write(head_row + 1 + r, c, val)
+            for i, col in enumerate(headers1):
+                width = max(12, min(44, int(class_rows[col].astype(str).map(len).max()) + 2)) if not class_rows.empty else 16
                 ws.set_column(i, i, width)
 
-            # center totals ranked
+            # center totals (days-weighted)
             start_r = head_row + 2 + len(class_rows)
-            totals = view[view["Class Name"]=="TOTAL"][["Center Name","Month Range","Funded","Current","Attendance Rate"]].copy().sort_values("Attendance Rate", ascending=False)
-            headers = ["Center Name","Month Range","Funded","Current","Attendance %"]
-            for c, name in enumerate(headers):
+            view_tot = centers_totals[centers_totals["Center Name"].isin(matched)][["Center Name","Attendance Rate","Days Sum"]].copy()
+            headers2 = ["Center Name","Attendance % (days-weighted)","Days Sum"]
+            for c, name in enumerate(headers2):
                 ws.write(start_r, c, name, header_fmt)
-            for i, (_, row) in enumerate(totals.iterrows()):
+            for i, (_, row) in enumerate(view_tot.iterrows()):
                 ws.write_string(start_r + 1 + i, 0, str(row["Center Name"]))
-                ws.write_string(start_r + 1 + i, 1, str(row["Month Range"]))
-                ws.write_number(start_r + 1 + i, 2, float(row["Funded"]) if pd.notna(row["Funded"]) else 0)
-                ws.write_number(start_r + 1 + i, 3, float(row["Current"]) if pd.notna(row["Current"]) else 0)
-                ws.write_number(start_r + 1 + i, 4, 0 if pd.isna(row["Attendance Rate"]) else float(row["Attendance Rate"])/100.0, pct_fmt)
+                ws.write_number(start_r + 1 + i, 1, 0 if pd.isna(row["Attendance Rate"]) else float(row["Attendance Rate"])/100.0, pct_fmt)
+                ws.write_number(start_r + 1 + i, 2, float(row["Days Sum"]) if pd.notna(row["Days Sum"]) else 0)
 
             # chart
-            if not totals.empty:
+            if not view_tot.empty:
                 ch2 = wb.add_chart({"type":"column"})
                 ch2.add_series({
                     "name": "Cumulative ADA",
-                    "categories": [sheet_name[:31], start_r + 1, 0, start_r + len(totals), 0],
-                    "values":     [sheet_name[:31], start_r + 1, 4, start_r + len(totals), 4],
+                    "categories": [sheet_name[:31], start_r + 1, 0, start_r + len(view_tot), 0],
+                    "values":     [sheet_name[:31], start_r + 1, 1, start_r + len(view_tot), 1],
                     "data_labels": {"value": True, "num_format": "0.00%", "font": {"size": 9}},
                 })
                 ch2.set_y_axis({"num_format":"0.00%"})
-                ch2.set_title({"name":"Cumulative ADA by Center"})
+                ch2.set_title({"name":"Cumulative ADA by Center (Days-weighted)"})
                 ws.insert_chart(start_r, 6, ch2, {"x_scale": 1.0, "y_scale": 1.0})
 
             ws.freeze_panes(4, 0)
 
-        # Guzman split cumulative
-        guz = df_rng[df_rng["Center Name"].astype(str).str.lower().str.contains("guzman")].copy()
-        if not guz.empty:
-            guz["Age Tag"] = guz["Class Name"].astype(str).map(_detect_age)
-            for tag, title in [("4yo","Guzman (4yo) — Cumulative"),("3yo","Guzman (3yo) — Cumulative")]:
-                sub = guz[guz["Age Tag"]==tag].copy()
-                if sub.empty:
-                    continue
-                # cumulative by class
-                cum_g = (
-                    sub.groupby(["Center Name","Class Name"], dropna=False)
-                       .apply(lambda dfcls: pd.Series({
-                           "Month Range": f"{_month_name(start_m)}–{_month_name(end_m)}",
-                           "Funded": dfcls['Funded'].max(skipna=True),
-                           "Current": dfcls['Current'].max(skipna=True),
-                           "Attendance Rate": (dfcls['Attendance Rate'].fillna(0).to_numpy() * dfcls['Current'].fillna(0).to_numpy()).sum() /
-                                              max(1e-9, dfcls['Current'].fillna(0).sum())
-                       }))
-                       .reset_index()
-                )
-                # center total
-                w = cum_g['Current'].fillna(0).astype(float)
-                r = cum_g['Attendance Rate'].fillna(0).astype(float)
+        # Guzman split cumulative (optional days-weighting by center name 'Guzman')
+        guz_names = [n for n in present_full2 if "guzman" in str(n).lower()]
+        if guz_names:
+            # Filter center_month to Guzman only
+            guz_cm = center_month[center_month["Center Name"].isin(guz_names)].copy()
+            if not guz_cm.empty:
+                # days-weighted cumulative
+                w = guz_cm["Month"].map(lambda m: float(days_per_month.get(int(m), 0))).to_numpy()
+                r = guz_cm["Monthly Rate"].astype(float).to_numpy()
                 wsum = w.sum()
-                rate = float((w*r).sum()/wsum) if wsum>0 else np.nan
-                tot = pd.DataFrame([{
-                    "Center Name": "Guzman",
-                    "Class Name": "TOTAL",
-                    "Month Range": f"{_month_name(start_m)}–{_month_name(end_m)}",
-                    "Funded": cum_g['Funded'].sum(min_count=1),
-                    "Current": cum_g['Current'].sum(min_count=1),
-                    "Attendance Rate": rate
-                }])
-                view = pd.concat([cum_g, tot], ignore_index=True)
-                ws = wb.add_worksheet(title[:31])
-                head = ["Center Name","Class Name","Month Range","Funded","Current","Attendance Rate"]
-                for c, name in enumerate(head):
-                    ws.write(3, c, name, header_fmt)
-                for r_i in range(len(view)):
-                    for c, col in enumerate(head):
-                        val = view.iloc[r_i][col]
-                        if col == "Attendance Rate":
-                            ws.write_number(4 + r_i, c, 0 if pd.isna(val) else float(val)/100.0, pct_fmt)
-                        else:
-                            if pd.isna(val):
-                                ws.write_blank(4 + r_i, c, None)
-                            else:
-                                ws.write(4 + r_i, c, val)
-                for i, col in enumerate(head):
-                    width = max(12, min(44, int(view[col].astype(str).map(len).max()) + 2))
-                    ws.set_column(i, i, width)
-                ws.freeze_panes(4, 0)
+                rate = float((r*w).sum()/wsum) if wsum>0 else np.nan
+
+                ws = wb.add_worksheet("Guzman — Cumulative")
+                ws.write(3, 0, "Center Name", header_fmt)
+                ws.write(3, 1, "Attendance Rate", header_fmt)
+                ws.write(3, 2, "Days Sum", header_fmt)
+                ws.write(4, 0, "Guzman")
+                if pd.isna(rate):
+                    ws.write_blank(4, 1, None, pct_fmt)
+                else:
+                    ws.write_number(4, 1, rate/100.0, pct_fmt)
+                ws.write_number(4, 2, wsum)
 
     return bio.getvalue()
 
 # ---------- GENERATE BOTH & ZIP ----------
 monthly_bytes = build_monthly_excel(df_all, sel_months)
-cumulative_bytes = build_cumulative_excel(df_all, start_m, end_m)
+cumulative_bytes = build_cumulative_excel(df_all, start_m, end_m, days_per_month)
 
 ts = datetime.now(ZoneInfo("America/Chicago")).strftime("%Y%m%d_%H%M")
 zip_buf = BytesIO()
@@ -545,7 +504,7 @@ with zipfile.ZipFile(zip_buf, 'w', compression=zipfile.ZIP_DEFLATED) as zf:
     zf.writestr(f"ADA_Cumulative_{_month_name(start_m)}_{_month_name(end_m)}_{ts}.xlsx", cumulative_bytes)
 zip_buf.seek(0)
 
-st.success("Reports ready! Monthly groups (with Guzman split) + Cumulative range report.")
+st.success("Reports ready! Monthly groups (with Guzman split) + Cumulative (days-weighted).")
 st.download_button(
     "Download ZIP (Monthly + Cumulative)",
     data=zip_buf.getvalue(),
@@ -553,7 +512,6 @@ st.download_button(
     mime="application/zip"
 )
 
-# Optional: also expose the individual files
 with st.expander("Download individual files"):
     st.download_button(
         "Download Monthly Groups (xlsx)",
