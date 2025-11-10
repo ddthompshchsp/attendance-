@@ -15,7 +15,7 @@ GREY = "#E6E6E6"
 
 # ---- GROUP DEFINITIONS ----
 # NOTE: Guzman is NOT in Group 1; handled separately (split 3yo/4yo).
-# Per your change: Group 3 ADD Camarena; (Edinburg North, San Carlos not in G3)
+# Per your change: Group 3 ADD Camarena.
 GROUPS = {
     "Group 1": [
         "Donna","Mission","Monte Alto","Sam Fordyce","Seguin","Sam Houston",
@@ -25,27 +25,34 @@ GROUPS = {
         "Chapa","Escandon","Guerra","Palacios","Singleterry","Edinburg North",
         "Alvarez","Farias","Longoria"
     ],
-    "Group 3": ["Mercedes","Edinburg","Camarena"],  # <— Camarena added
-    # Guzman handled separately
+    "Group 3": ["Mercedes","Edinburg","Camarena"],  # Camarena added
+    # Guzman handled separately (split by 3yo/4yo)
 }
 
-# Typos/aliases (optional)
-SIMPLE_ALIASES = {"fairs":"farias","sequin":"seguin","chaps":"chapa","camerana":"camarena","camarano":"camarena"}
+# Optional typos/aliases
+SIMPLE_ALIASES = {
+    "fairs":"farias","sequin":"seguin","chaps":"chapa",
+    "camerana":"camarena","camarano":"camarena"
+}
 
 # ---- HELPERS ----
 def _month_name(m: int) -> str:
-    try: return calendar.month_name[int(m)]
-    except Exception: return str(m)
+    try:
+        return calendar.month_name[int(m)]
+    except Exception:
+        return str(m)
 
 def _canon(x: str) -> str:
     return re.sub(r'[^a-z0-9]+', '', str(x).lower())
 
 def _norm_simple(s: str) -> str:
-    k = _canon(s);  return SIMPLE_ALIASES.get(k, k)
+    k = _canon(s)
+    return SIMPLE_ALIASES.get(k, k)
 
 def _weighted_avg_rate(df: pd.DataFrame) -> float:
-    """Center/class monthly ADA weighted by Current (0..100)."""
-    if df.empty or "Attendance Rate" not in df.columns: return np.nan
+    """Center/class monthly ADA weighted by Current (0..100, not fraction)."""
+    if df.empty or "Attendance Rate" not in df.columns:
+        return np.nan
     w = df.get("Current", pd.Series([0]*len(df))).fillna(0).astype(float)
     r = df["Attendance Rate"].fillna(0).astype(float)
     tot = float(w.sum())
@@ -75,7 +82,8 @@ def _detect_age(text: str):
 
 def _append_guzman_age(df: pd.DataFrame) -> pd.DataFrame:
     out = df.copy()
-    if "Center Name" not in out.columns or "Class Name" not in out.columns: return out
+    if "Center Name" not in out.columns or "Class Name" not in out.columns:
+        return out
     mask = out["Center Name"].astype(str).str.lower().str.contains("guzman")
     out.loc[mask, "Age Tag"] = out.loc[mask, "Class Name"].astype(str).map(_detect_age)
     out.loc[mask, "Class Name"] = out.loc[mask].apply(
@@ -92,17 +100,20 @@ def _load_enrollment(file_bytes: bytes, preferred_sheet="V12POP_ERSEA_Enrollment
         try:
             tmp = pd.read_excel(BytesIO(file_bytes), sheet_name=use_sheet, header=hdr)
             if not tmp.empty:
-                df = tmp; break
+                df = tmp
+                break
         except Exception:
             pass
     if df is None or df.empty:
         raise ValueError("Could not read a non-empty sheet from the workbook.")
     df.columns = [str(c).strip() for c in df.columns]
+    # remap common unnamed numerics
     df = df.rename(columns={"Unnamed: 6":"Funded","Unnamed: 8":"Current","Unnamed: 9":"Attendance Rate"})
     keep = ['Year', 'Month', 'Center Name', 'Class Name', 'Funded', 'Current', 'Attendance Rate']
     df = df[[c for c in keep if c in df.columns]].copy()
     for c in ['Year','Month','Funded','Current','Attendance Rate']:
-        if c in df.columns: df[c] = pd.to_numeric(df[c], errors='coerce')
+        if c in df.columns:
+            df[c] = pd.to_numeric(df[c], errors='coerce')
     if 'Class Name' in df.columns:
         mask_total = df['Class Name'].astype(str).str.upper().eq('TOTAL')
         mask_blank = df['Class Name'].astype(str).str.strip().eq('') | df['Class Name'].isna()
@@ -113,6 +124,7 @@ def _load_enrollment(file_bytes: bytes, preferred_sheet="V12POP_ERSEA_Enrollment
 def _match_centers(simple_list, present_full):
     def _short_label(full_name: str) -> str:
         return re.split(r'\s*[\-\(–—]\s*', str(full_name), maxsplit=1)[0].strip()
+    # Map of normalized short labels -> list of full names present
     full_map = {}
     for f in present_full:
         key = _norm_simple(_short_label(f))
@@ -183,10 +195,11 @@ def _business_days_up_to(d: date) -> int:
 
 days_per_month = {}
 for m in cum_months:
-    # Pre-fill partial current month with business days up to as_of; others = default full month days
     pref = _business_days_up_to(as_of) if (m == as_of.month) else default_full_month_days
-    days_per_month[m] = st.number_input(f"Class days for {_month_name(m)}", min_value=0, max_value=31,
-                                        value=int(pref), step=1, key=f"days_{m}")
+    days_per_month[m] = st.number_input(
+        f"Class days for {_month_name(m)}",
+        min_value=0, max_value=31, value=int(pref), step=1, key=f"days_{m}"
+    )
 
 # ---------- BUILD MONTHLY REPORT ----------
 def build_monthly_excel(df_all: pd.DataFrame, sel_months: list[int]) -> bytes:
@@ -194,13 +207,15 @@ def build_monthly_excel(df_all: pd.DataFrame, sel_months: list[int]) -> bytes:
     bio = BytesIO()
     with pd.ExcelWriter(bio, engine="xlsxwriter") as writer:
         wb = writer.book
-        header_fmt = wb.add_format({"bold": True, "font_color": "white", "bg_color": BLUE, "align": "center", "valign": "vcenter"})
-        pct_fmt    = wb.add_format({"num_format": "0.00%"})
-        bold_fmt   = wb.add_format({"bold": True})
-        s_head     = wb.add_format({"bold": True, "bg_color": GREY, "border": 1, "font_size": 9})
-        s_cell     = wb.add_format({"border": 1, "font_size": 9})
-        s_pct      = wb.add_format({"border": 1, "num_format": "0.00%", "font_size": 9})
+        FMT_HEADER = wb.add_format({"bold": True, "font_color": "white", "bg_color": BLUE, "align": "center", "valign": "vcenter"})
+        FMT_PCT    = wb.add_format({"num_format": "0.00%"})
+        FMT_BOLD   = wb.add_format({"bold": True})
+        FMT_CELL   = wb.add_format({})
+        FMT_GRID   = wb.add_format({"border": 1, "font_size": 9})
+        FMT_GRID_P = wb.add_format({"border": 1, "num_format": "0.00%", "font_size": 9})
+        FMT_HEAD_S = wb.add_format({"bold": True, "bg_color": GREY, "border": 1, "font_size": 9})
 
+        # --- ADA overview for latest month ---
         latest_m = max(sel_months)
         m_df = grouped_src[grouped_src["Month"] == latest_m].copy()
         if not m_df.empty:
@@ -220,60 +235,82 @@ def build_monthly_excel(df_all: pd.DataFrame, sel_months: list[int]) -> bytes:
         else:
             ada = pd.DataFrame(columns=['Year','Month','Center Name','Class Name','Funded','Current','Attendance Rate'])
 
+        # Write ADA sheet
         ada.to_excel(writer, index=False, sheet_name="ADA", startrow=3)
         ws = writer.sheets["ADA"]
         header_row = 3
+        # style header row
         for c, name in enumerate(ada.columns):
-            ws.write(header_row, c, name, header_fmt)
+            ws.write(header_row, c, name, FMT_HEADER)
         ws.set_row(header_row, 26)
+        # widths
         for i, col in enumerate(ada.columns):
             width = max(12, min(44, int(ada[col].astype(str).map(len).max()) + 2)) if not ada.empty else 16
             ws.set_column(i, i, width)
+        # write cells and bold TOTAL per-cell (avoid set_row formatting)
         if not ada.empty and 'Attendance Rate' in ada.columns:
             ci = ada.columns.get_loc('Attendance Rate')
             ki = ada.columns.get_loc('Class Name')
             for r in range(len(ada)):
                 excel_r = r + header_row + 1
-                v = ada.iloc[r, ci]
-                if pd.isna(v): ws.write_blank(excel_r, ci, None, pct_fmt)
-                else:          ws.write_number(excel_r, ci, float(v)/100.0, pct_fmt)
-                if str(ada.iloc[r, ki]).upper() == "TOTAL":
-                    ws.set_row(excel_r, None, bold_fmt)
+                is_total = str(ada.iloc[r, ki]).upper() == "TOTAL"
+                for c, colname in enumerate(ada.columns):
+                    val = ada.iloc[r, c]
+                    # choose bold fmt for TOTAL cells (including %)
+                    if c == ci:
+                        if pd.isna(val):
+                            ws.write_blank(excel_r, c, None, FMT_PCT if not is_total else wb.add_format({"num_format":"0.00%","bold":True}))
+                        else:
+                            ws.write_number(excel_r, c, float(val)/100.0, FMT_PCT if not is_total else wb.add_format({"num_format":"0.00%","bold":True}))
+                    else:
+                        if pd.isna(val):
+                            ws.write_blank(excel_r, c, None, FMT_BOLD if is_total else FMT_CELL)
+                        else:
+                            ws.write(excel_r, c, val, FMT_BOLD if is_total else FMT_CELL)
+
         ws.freeze_panes(header_row + 1, 0)
         last_col = max(0, len(ada.columns)-1)
         last_row = header_row + len(ada)
         ws.autofilter(header_row, 0, last_row, last_col)
-        ws.write(0, 1, f"Daily Attendance Rate — {_month_name(latest_m)}", bold_fmt)
+        ws.write(0, 1, f"Daily Attendance Rate — {_month_name(latest_m)}", FMT_BOLD)
 
+        # ---- per-group writer ----
         def write_group_sheet(sheet_name: str, df_src: pd.DataFrame):
-            ws = wb.add_worksheet(sheet_name[:31])
+            wsg = wb.add_worksheet(sheet_name[:31])
             start_row = 3
             for fn, g_center in df_src.groupby("Center Name"):
                 for m in sorted(g_center["Month"].dropna().unique().astype(int)):
                     g = g_center[g_center["Month"] == m].copy()
-                    if g.empty: continue
+                    if g.empty:
+                        continue
                     block = _center_block(g)
-                    ws.write(start_row - 2, 0, f"{fn} — {_month_name(m)}", bold_fmt)
-                    ws.set_row(start_row, 26)
+                    wsg.write(start_row - 2, 0, f"{fn} — {_month_name(m)}", FMT_BOLD)
+                    # headers
                     for c, name in enumerate(block.columns):
-                        ws.write(start_row, c, name, header_fmt)
+                        wsg.write(start_row, c, name, FMT_HEADER)
+                    # values
                     for r in range(len(block)):
+                        is_total = str(block.iloc[r]["Class Name"]).upper() == "TOTAL"
                         for c, col in enumerate(block.columns):
                             val = block.iloc[r, c]
                             if col == "Attendance Rate":
-                                if pd.isna(val): ws.write_blank(start_row + 1 + r, c, None, pct_fmt)
-                                else:            ws.write_number(start_row + 1 + r, c, float(val)/100.0, pct_fmt)
+                                if pd.isna(val):
+                                    wsg.write_blank(start_row + 1 + r, c, None, FMT_GRID_P if not is_total else wb.add_format({"border":1,"num_format":"0.00%","font_size":9,"bold":True}))
+                                else:
+                                    wsg.write_number(start_row + 1 + r, c, float(val)/100.0, FMT_GRID_P if not is_total else wb.add_format({"border":1,"num_format":"0.00%","font_size":9,"bold":True}))
                             else:
-                                if pd.isna(val): ws.write_blank(start_row + 1 + r, c, None)
-                                else:            ws.write(start_row + 1 + r, c, val)
-                        if str(block.iloc[r]["Class Name"]).upper() == "TOTAL":
-                            ws.set_row(start_row + 1 + r, None, bold_fmt)
+                                if pd.isna(val):
+                                    wsg.write_blank(start_row + 1 + r, c, None, FMT_GRID if not is_total else wb.add_format({"border":1,"font_size":9,"bold":True}))
+                                else:
+                                    wsg.write(start_row + 1 + r, c, val, FMT_GRID if not is_total else wb.add_format({"border":1,"font_size":9,"bold":True}))
+                    # autosize
                     for i, col in enumerate(block.columns):
                         width = max(12, min(44, int(block[col].astype(str).map(len).max()) + 2))
-                        ws.set_column(i, i, width)
+                        wsg.set_column(i, i, width)
                     start_row += len(block) + 3
-            ws.freeze_panes(4, 0)
+            wsg.freeze_panes(4, 0)
 
+            # Compact summary (Month, Center, %)
             sums = (
                 df_src.groupby(["Month","Center Name"], dropna=False)
                       .apply(_weighted_avg_rate)
@@ -281,24 +318,26 @@ def build_monthly_excel(df_all: pd.DataFrame, sel_months: list[int]) -> bytes:
                       .sort_values(["Month","Attendance %"], ascending=[True, False])
             )
             small_r, small_c = start_row, 0
-            ws.write(small_r,   small_c,   "Month",        wb.add_format({"bold": True, "bg_color": GREY, "border": 1, "font_size": 9}))
-            ws.write(small_r,   small_c+1, "Center Name",  wb.add_format({"bold": True, "bg_color": GREY, "border": 1, "font_size": 9}))
-            ws.write(small_r,   small_c+2, "Attendance %", wb.add_format({"bold": True, "bg_color": GREY, "border": 1, "font_size": 9}))
+            wsg.write(small_r,   small_c,   "Month",        FMT_HEAD_S)
+            wsg.write(small_r,   small_c+1, "Center Name",  FMT_HEAD_S)
+            wsg.write(small_r,   small_c+2, "Attendance %", FMT_HEAD_S)
             for i, row in sums.iterrows():
-                ws.write_string(small_r + 1 + i, small_c,   _month_name(int(row["Month"])) if pd.notna(row["Month"]) else "", wb.add_format({"border":1,"font_size":9}))
-                ws.write_string(small_r + 1 + i, small_c+1, str(row["Center Name"]), wb.add_format({"border":1,"font_size":9}))
+                wsg.write_string(small_r + 1 + i, small_c,   _month_name(int(row["Month"])) if pd.notna(row["Month"]) else "", FMT_GRID)
+                wsg.write_string(small_r + 1 + i, small_c+1, str(row["Center Name"]), FMT_GRID)
                 if pd.isna(row["Attendance %"]):
-                    ws.write_blank(small_r + 1 + i, small_c+2, None, wb.add_format({"border":1,"num_format":"0.00%","font_size":9}))
+                    wsg.write_blank(small_r + 1 + i, small_c+2, None, FMT_GRID_P)
                 else:
-                    ws.write_number(small_r + 1 + i, small_c+2, float(row["Attendance %"])/100.0, wb.add_format({"border":1,"num_format":"0.00%","font_size":9}))
+                    wsg.write_number(small_r + 1 + i, small_c+2, float(row["Attendance %"])/100.0, FMT_GRID_P)
             last_row_small = small_r + len(sums)
-            ws.autofilter(small_r, 0, last_row_small, 2)
+            wsg.autofilter(small_r, small_c, last_row_small, small_c + 2)
 
+            # Charts: one per month
             months_for_charts = sorted(df_src["Month"].dropna().unique().astype(int).tolist())
             chart_col_offset = 5
             for idx, m in enumerate(months_for_charts):
                 rows_for_m = [i for i, (_, r) in enumerate(sums.iterrows()) if int(r["Month"]) == int(m)]
-                if not rows_for_m: continue
+                if not rows_for_m:
+                    continue
                 start_off, end_off = rows_for_m[0], rows_for_m[-1]
                 ch = wb.add_chart({"type": "column"})
                 ch.add_series({
@@ -309,20 +348,23 @@ def build_monthly_excel(df_all: pd.DataFrame, sel_months: list[int]) -> bytes:
                 })
                 ch.set_y_axis({"num_format": "0.00%"})
                 ch.set_title({"name": f"{_month_name(m)} — Attendance %"})
-                ws.insert_chart(small_r, small_c + chart_col_offset + idx*8, ch, {"x_scale": 1.1, "y_scale": 1.0})
+                wsg.insert_chart(small_r, small_c + chart_col_offset + idx*8, ch, {"x_scale": 1.1, "y_scale": 1.0})
 
+        # Build Group 1–3 (no Guzman)
         present_full = grouped_src['Center Name'].dropna().unique().tolist()
         for sheet_name, simple_list in GROUPS.items():
             matched = _match_centers(simple_list, present_full)
             df_use = grouped_src[grouped_src["Center Name"].isin(matched)].copy()
             write_group_sheet(sheet_name, df_use)
 
+        # Guzman split
         guz = grouped_src[grouped_src["Center Name"].astype(str).str.lower().str.contains("guzman")].copy()
         if not guz.empty:
             guz["Age Tag"] = guz["Class Name"].astype(str).map(_detect_age)
             for tag, title in [("4yo","Group 4 — Guzman (4yo)"),("3yo","Group 4 — Guzman (3yo)")]:
                 sub = guz[guz["Age Tag"]==tag].copy()
-                if sub.empty: continue
+                if sub.empty: 
+                    continue
                 write_group_sheet(title, sub)
 
     return bio.getvalue()
@@ -359,21 +401,21 @@ def build_cumulative_excel(df_all: pd.DataFrame, start_m: int, end_m: int, days_
     bio = BytesIO()
     with pd.ExcelWriter(bio, engine="xlsxwriter") as writer:
         wb = writer.book
-        header_fmt = wb.add_format({"bold": True, "font_color": "white", "bg_color": BLUE, "align": "center", "valign": "vcenter"})
-        pct_fmt    = wb.add_format({"num_format": "0.00%"})
-        s_head     = wb.add_format({"bold": True, "bg_color": GREY, "border": 1, "font_size": 9})
-        s_cell     = wb.add_format({"border": 1, "font_size": 9})
-        s_pct      = wb.add_format({"border": 1, "num_format": "0.00%", "font_size": 9})
+        FMT_HEADER = wb.add_format({"bold": True, "font_color": "white", "bg_color": BLUE, "align": "center", "valign": "vcenter"})
+        FMT_PCT    = wb.add_format({"num_format": "0.00%"})
+        FMT_GRID   = wb.add_format({"border": 1, "font_size": 9})
+        FMT_GRID_P = wb.add_format({"border": 1, "num_format": "0.00%", "font_size": 9})
+        FMT_HEAD_S = wb.add_format({"bold": True, "bg_color": GREY, "border": 1, "font_size": 9})
 
         centers_rank = centers_totals[["Center Name","Attendance Rate"]].sort_values("Attendance Rate", ascending=False).reset_index(drop=True)
         ws0 = wb.add_worksheet("Dashboard")
         ws0.write(0, 1, f"Cumulative ADA (Days-weighted) — {_month_name(start_m)} to {_month_name(end_m)}", wb.add_format({"bold": True, "font_size": 22, "font_color": BLUE}))
-        ws0.write(2, 1, "Center Name", s_head); ws0.write(2, 2, "Attendance %", s_head)
+        ws0.write(2, 1, "Center Name", FMT_HEAD_S); ws0.write(2, 2, "Attendance %", FMT_HEAD_S)
         for i, row in centers_rank.iterrows():
-            ws0.write_string(3+i, 1, str(row["Center Name"]), s_cell)
+            ws0.write_string(3+i, 1, str(row["Center Name"]), FMT_GRID)
             val = row["Attendance Rate"]
-            if pd.isna(val): ws0.write_blank(3+i, 2, None, s_pct)
-            else:            ws0.write_number(3+i, 2, float(val)/100.0, s_pct)
+            if pd.isna(val): ws0.write_blank(3+i, 2, None, FMT_GRID_P)
+            else:            ws0.write_number(3+i, 2, float(val)/100.0, FMT_GRID_P)
         if not centers_rank.empty:
             ch = wb.add_chart({"type":"column"})
             ch.add_series({
@@ -386,7 +428,7 @@ def build_cumulative_excel(df_all: pd.DataFrame, start_m: int, end_m: int, days_
             ch.set_title({"name": "Centers — Cumulative ADA (Days-weighted)"})
             ws0.insert_chart(2, 5, ch, {"x_scale": 1.2, "y_scale": 1.1})
 
-        # Per-group sheets: center totals (days-weighted)
+        # Per-group sheets (center totals only, days-weighted)
         present_full2 = df_rng['Center Name'].dropna().unique().tolist()
         for sheet_name, simple_list in GROUPS.items():
             matched = _match_centers(simple_list, present_full2)
@@ -396,11 +438,12 @@ def build_cumulative_excel(df_all: pd.DataFrame, start_m: int, end_m: int, days_
             head_row = 3
             headers = ["Center Name","Attendance % (days-weighted)","Days Sum"]
             for c, name in enumerate(headers):
-                ws.write(head_row, c, name, header_fmt)
+                ws.write(head_row, c, name, FMT_HEADER)
             for i, (_, row) in enumerate(view_tot.iterrows()):
-                ws.write_string(head_row + 1 + i, 0, str(row["Center Name"]))
-                ws.write_number(head_row + 1 + i, 1, 0 if pd.isna(row["Attendance Rate"]) else float(row["Attendance Rate"])/100.0, pct_fmt)
-                ws.write_number(head_row + 1 + i, 2, float(row["Days Sum"]) if pd.notna(row["Days Sum"]) else 0)
+                ws.write_string(head_row + 1 + i, 0, str(row["Center Name"]), FMT_GRID)
+                ws.write_number(head_row + 1 + i, 1, 0 if pd.isna(row["Attendance Rate"]) else float(row["Attendance Rate"])/100.0, FMT_GRID_P)
+                ws.write_number(head_row + 1 + i, 2, float(row["Days Sum"]) if pd.notna(row["Days Sum"]) else 0, FMT_GRID)
+
             ws.freeze_panes(4, 0)
 
             if not view_tot.empty:
@@ -415,7 +458,7 @@ def build_cumulative_excel(df_all: pd.DataFrame, start_m: int, end_m: int, days_
                 ch2.set_title({"name":"Cumulative ADA by Center (Days-weighted)"})
                 ws.insert_chart(head_row, 5, ch2, {"x_scale": 1.0, "y_scale": 1.0})
 
-        # (Optional) show the raw center-month rates tab for transparency
+        # Transparency: center-month rates
         center_month.to_excel(writer, index=False, sheet_name="Center_Monthly_ADA")
 
     return bio.getvalue()
@@ -454,4 +497,3 @@ with st.expander("Download individual files"):
         mime="application/vnd.openxmlformats-officedocument.spreadsheetml.sheet",
         key="cum"
     )
-
